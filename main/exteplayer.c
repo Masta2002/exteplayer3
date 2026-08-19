@@ -56,6 +56,8 @@ extern void       aac_software_decoder_set(const int32_t val);
 extern void  aac_latm_software_decoder_set(const int32_t val);
 extern void       dts_software_decoder_set(const int32_t val);
 extern void    truehd_software_decoder_set(const int32_t val);
+extern void      dts_ac3_transcoder_set(const int32_t val);
+extern void   truehd_ac3_transcoder_set(const int32_t val);
 extern void       wma_software_decoder_set(const int32_t val);
 extern void       ac3_software_decoder_set(const int32_t val);
 extern void      eac3_software_decoder_set(const int32_t val);
@@ -510,7 +512,10 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
 							strbuffer_add( ptrManager->tracks_cache, ", " );
 						}
 
-						sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
+						if ('a' == argvBuff[0])
+							sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name, TrackList[i].channels);
+						else
+							sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
 						strbuffer_add( ptrManager->tracks_cache, tmp_str );
 
 						free(TrackList[i].Encoding);
@@ -544,7 +549,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
             ptrManager->Command(g_player, MANAGER_GET_TRACK_DESC, &track);
             if (NULL != track)
             {
-                if ('a' == argvBuff[0] || 's' == argvBuff[0])
+                if ('a' == argvBuff[0])
+                {
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name, track->channels);
+                }
+                else if ('s' == argvBuff[0])
                 {
                     E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name);
                 }
@@ -563,7 +572,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
             else
             {
                 // no tracks
-                if ('a' == argvBuff[0] || 's' == argvBuff[0])
+                if ('a' == argvBuff[0])
+                {
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d}}\n", argvBuff[0], argvBuff[1], -1, "", "", 0);
+                }
+                else if ('s' == argvBuff[0])
                 {
                     E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}}\n", argvBuff[0], argvBuff[1], -1, "", "");
                 }
@@ -639,7 +652,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:")) != -1)
+    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dDXlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:")) != -1)
     {
         switch (c)
         {
@@ -689,6 +702,14 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         case 'd':
             printf("Software decoder will be used for DTS codec\n");
             dts_software_decoder_set(1);
+            break;
+        case 'D':
+            printf("DTS / DTS-HD will be transcoded to AC3 5.1\n");
+            dts_ac3_transcoder_set(1);
+            break;
+        case 'X':
+            printf("TrueHD will be transcoded to AC3 5.1\n");
+            truehd_ac3_transcoder_set(1);
             break;
         case 'm':
             printf("Software decoder will be used for MP3 codec\n");
@@ -897,6 +918,8 @@ int main(int argc, char* argv[])
         printf("[-e] EAC3 software decoding\n");
         printf("[-3] AC3 software decoding\n");
         printf("[-d] DTS software decoding\n");
+        printf("[-D] DTS / DTS-HD transcoding to AC3 5.1\n");
+        printf("[-X] TrueHD transcoding to AC3 5.1\n");
         printf("[-m] MP3 software decoding\n");
         printf("[-A 0|1] disable|enable AMR software decoding\n");
         printf("[-V 0|1] disable|enable VORBIS software decoding\n");
