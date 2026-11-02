@@ -1640,6 +1640,178 @@ static void updateHevcHdr(Context_t *context, Track_t *track,
 #endif
 }
 
+#ifndef HAVE_DREAMNEXTGEN
+/* In live TS the audio can trail the video by more than 1 s and a Dreambox drops
+ * it as late, for the rest of the channel. So the output is held at the start
+ * until enough audio is there, and again when it runs out while playing.
+ * EP3_LIVE_SYNC=0 and EP3_LIVE_SYNC_WATCH=0 switch this off. */
+#include <time.h>
+static volatile int     ls_state  = 0;   /* 0 not started, 1 holding, 2 done/off */
+static volatile int64_t ls_last_v = INVALID_PTS_VALUE;
+static volatile int64_t ls_last_a = INVALID_PTS_VALUE;
+
+static int64_t ls_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void ls_watch(Context_t *context)
+{
+    const char *env = getenv("EP3_LIVE_SYNC_WATCH");
+    int low = 0;
+    int64_t last_resync = 0;
+
+    if (env && env[0] == '0')
+    {
+        return;
+    }
+    while (context->playback && context->playback->isPlaying)
+    {
+        unsigned long long int cur = 0;
+        int64_t d;
+        int64_t slack;
+        int64_t t1;
+
+        usleep(250000);
+        if (context->playback->isPaused || ls_last_a == INVALID_PTS_VALUE)
+        {
+            low = 0;
+            continue;
+        }
+        if (context->output->Command(context, OUTPUT_PTS, &cur) != 0 || cur == 0)
+        {
+            continue;
+        }
+        d = ((int64_t)ls_last_a - (int64_t)cur) & 0x1FFFFFFFFLL;
+        if (d >= 0x100000000LL)
+        {
+            d -= 0x200000000LL;
+        }
+        slack = d / 90;
+        if (slack < -10000 || slack > 30000)    /* a discontinuity, no buffer state */
+        {
+            low = 0;
+            continue;
+        }
+        low = slack < 150 ? low + 1 : 0;
+        if (low < 2 || ls_now_ms() - last_resync < 5000)
+        {
+            continue;
+        }
+        /* hold until about 1 s of audio is ahead of the picture */
+        t1 = ls_now_ms();
+        context->output->Command(context, OUTPUT_PAUSE, NULL);
+        while (context->playback && context->playback->isPlaying && !context->playback->isPaused &&
+               ls_now_ms() - t1 < 3000)
+        {
+            int64_t dd = ((int64_t)ls_last_a - (int64_t)cur) & 0x1FFFFFFFFLL;
+            if (dd >= 0x100000000LL)
+            {
+                dd -= 0x200000000LL;
+            }
+            if (dd / 90 >= 1000)
+            {
+                break;
+            }
+            usleep(50000);
+        }
+        if (context->playback && context->playback->isPlaying && !context->playback->isPaused)
+        {
+            context->output->Command(context, OUTPUT_CONTINUE, NULL);
+        }
+        last_resync = ls_now_ms();
+        low = 0;
+        printf("{\"log\":\"live sync: audio ran out (%lld ms), held %lld ms\"}\n", (long long)slack, (long long)(last_resync - t1));
+        fflush(stdout);
+    }
+}
+
+static void *ls_thread(void *arg)
+{
+    Context_t *context = (Context_t *)arg;
+    int64_t t0 = ls_now_ms();
+    int64_t maxgap = 0;
+    int64_t need = -1;
+
+    while (ls_state == 1 && context->playback && context->playback->isPlaying)
+    {
+        int64_t el = ls_now_ms() - t0;
+        need = -1;
+        if (ls_last_v != INVALID_PTS_VALUE && ls_last_a != INVALID_PTS_VALUE)
+        {
+            int64_t gap = (ls_last_v - ls_last_a) / 90;
+            if (gap > maxgap)
+            {
+                maxgap = gap;
+            }
+            need = maxgap > 200 ? maxgap + 800 : 0;
+            if (need > 5000)
+            {
+                need = 5000;
+            }
+        }
+        else if (el >= 2000)
+        {
+            need = 0;                     /* no audio seen: do not hold the video */
+        }
+        if ((need >= 0 && el >= need) || el >= 6000)
+        {
+            break;
+        }
+        usleep(50000);
+    }
+    if (ls_state == 1)
+    {
+        ls_state = 2;
+        if (context->playback && context->playback->isPlaying && !context->playback->isPaused)
+        {
+            context->output->Command(context, OUTPUT_CONTINUE, NULL);
+        }
+        printf("{\"log\":\"live sync: audio gap %lld ms, held %lld ms\"}\n", (long long)maxgap, (long long)(ls_now_ms() - t0));
+        fflush(stdout);
+        ls_watch(context);
+    }
+    return NULL;
+}
+
+static void ls_on_video(Context_t *context, int64_t pts)
+{
+    pthread_t th;
+    pthread_attr_t at;
+    const char *env;
+
+    if (pts != INVALID_PTS_VALUE)
+    {
+        ls_last_v = pts;
+    }
+    if (ls_state != 0)
+    {
+        return;
+    }
+    env = getenv("EP3_LIVE_SYNC");
+    if (STB_DREAMBOX != GetSTBType() || (env && env[0] == '0') || !avContextTab[0] ||
+        (avContextTab[0]->duration != AV_NOPTS_VALUE && avContextTab[0]->duration > 0))
+    {
+        ls_state = 2;
+        return;
+    }
+    ls_state = 1;
+    context->output->Command(context, OUTPUT_PAUSE, NULL);
+    pthread_attr_init(&at);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&th, &at, ls_thread, context) != 0)
+    {
+        ls_state = 2;
+        context->output->Command(context, OUTPUT_CONTINUE, NULL);
+    }
+    pthread_attr_destroy(&at);
+}
+#else
+#define ls_on_video(context, pts)
+#endif
+
 /* MPEG-TS has no index: a seek by time is a binary search with a new HTTP
  * connection for every step, up to 30-40 s on a slow server. With a known size
  * and length the position is estimated instead, in one request. It can land a
@@ -2168,6 +2340,7 @@ static void FFMPEGThread(Context_t *context)
                         avOut.infoFlags = 1; // TS container
                     }
 
+                    ls_on_video(context, pts);
                     if (Write(context->output->video->Write, context, &avOut, pts) < 0)
                     {
                         ffmpeg_err("writing data to video device failed\n");
@@ -2178,6 +2351,12 @@ static void FFMPEGThread(Context_t *context)
             {
                 uint8_t skipPacket = 0;
                 currentAudioPts = audioTrack->pts = pts = calcPts(cAVIdx, audioTrack->stream, packet.pts);
+#ifndef HAVE_DREAMNEXTGEN
+                if (currentAudioPts != INVALID_PTS_VALUE)
+                {
+                    ls_last_a = currentAudioPts;
+                }
+#endif
                 dts = calcPts(cAVIdx, audioTrack->stream, packet.dts);
 
                 if ((currentAudioPts != INVALID_PTS_VALUE) && (currentAudioPts > latestPts) && (!videoTrack))
