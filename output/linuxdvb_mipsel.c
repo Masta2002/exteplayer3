@@ -215,6 +215,25 @@ static int LinuxDvbMapStreamType(int streamtype, bool primary)
     return streamtype;
 }
 
+/* A player that was just stopped can hold the device for a few ms. Without
+ * this the open fails and enigma2 starts the whole service again after 500 ms. */
+static int LinuxDvbOpenRetryOnBusy(const char *path, int flags)
+{
+    int waited_us = 0;
+    int fd;
+
+    while (1)
+    {
+        fd = open(path, flags);
+        if (fd >= 0 || errno != EBUSY || waited_us >= 250000)
+        {
+            return fd;
+        }
+        usleep(10000);
+        waited_us += 10000;
+    }
+}
+
 int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
 {
     uint8_t video = !strcmp("video", type);
@@ -224,7 +243,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
 
     if (video && videofd < 0)
     {
-        videofd = open(VIDEODEV, O_RDWR | O_NONBLOCK);
+        videofd = LinuxDvbOpenRetryOnBusy(VIDEODEV, O_RDWR | O_NONBLOCK);
 
         if (videofd < 0)
         {
@@ -252,7 +271,7 @@ int LinuxDvbOpen(Context_t  *context __attribute__((unused)), char *type)
     }
     if (audio && audiofd < 0)
     {
-        audiofd = open(AUDIODEV, O_RDWR | O_NONBLOCK);
+        audiofd = LinuxDvbOpenRetryOnBusy(AUDIODEV, O_RDWR | O_NONBLOCK);
 
         if (audiofd < 0)
         {
