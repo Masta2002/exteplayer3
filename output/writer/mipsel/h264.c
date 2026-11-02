@@ -76,6 +76,8 @@ static unsigned char           *CodecData     = NULL;
 static unsigned int            CodecDataLen   = 0;
 static int                     avc3 = 0;
 static int                     sps_pps_in_stream = 0;
+static uint8_t                *lastPrivateData = NULL;
+static uint32_t                lastPrivateSize = 0;
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
@@ -417,7 +419,10 @@ static int writeData(void* _call)
     ic = 0;
     iov[ic++].iov_base = PesHeader;
 
-    if (!avc3)
+    /* the parameter sets of avcC go once to the decoder, repeating them for
+     * every frame can reset its reference picture management */
+    if (!avc3 && (initialHeader || NULL == CodecData ||
+        lastPrivateData != call->private_data || lastPrivateSize != call->private_size))
     {
         if (CodecData)
         {
@@ -427,6 +432,9 @@ static int writeData(void* _call)
 
         uint8_t  *private_data = call->private_data;
         uint32_t  private_size = call->private_size;
+
+        lastPrivateData = call->private_data;
+        lastPrivateSize = call->private_size;
 
         if ( PreparCodecData(private_data, private_size, &NalLengthBytes))
         {
@@ -441,11 +449,43 @@ static int writeData(void* _call)
             private_data = NULL;
         }
 
+        /* a stream with its own SPS/PPS keeps them: re-cut TV recordings have
+         * other ones than avcC, and those break the picture */
+        if (!sps_pps_in_stream && NalLengthBytes >= 1 && NalLengthBytes <= 4)
+        {
+            uint32_t p = 0;
+            while (p + NalLengthBytes < (uint32_t)call->len)
+            {
+                uint32_t nl = 0;
+                uint32_t k = 0;
+                uint8_t type = 0;
+                for (k = 0; k < NalLengthBytes; k++)
+                {
+                    nl = (nl << 8) | call->data[p + k];
+                }
+                type = call->data[p + NalLengthBytes] & 0x1f;
+                if (type == 7 || type == 8)
+                {
+                    sps_pps_in_stream = 1;
+                    break;
+                }
+                /* zero or corrupt NAL length */
+                if (nl == 0 || nl > (uint32_t)call->len - p - NalLengthBytes)
+                {
+                    break;
+                }
+                p += NalLengthBytes + nl;
+            }
+        }
+
         if (CodecData != NULL)
         {
-            iov[ic].iov_base  = CodecData;
-            iov[ic++].iov_len = CodecDataLen;
-            PacketLength     += CodecDataLen;
+            if (!sps_pps_in_stream)
+            {
+                iov[ic].iov_base  = CodecData;
+                iov[ic++].iov_len = CodecDataLen;
+                PacketLength     += CodecDataLen;
+            }
             initialHeader = 0;
         }
     }
