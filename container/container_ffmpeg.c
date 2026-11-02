@@ -229,6 +229,8 @@ static void releaseSeekMutex()
 
 typedef int32_t (* Write_FN) (void  *, void *);
 
+#include <libavutil/avstring.h>
+
 /* FFmpeg dropped the FF_PROFILE_ names for AV_PROFILE_ */
 #if !defined(FF_PROFILE_AAC_ELD) && defined(AV_PROFILE_AAC_ELD)
 #define FF_PROFILE_AAC_ELD AV_PROFILE_AAC_ELD
@@ -4149,6 +4151,9 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     lang = av_dict_get(stream->metadata, "language", NULL, 0);
                     track.Name = lang ? lang->value : "und";
                     ffmpeg_printf(10, "Language %s\n", track.Name);
+
+                    AVDictionaryEntry *title = av_dict_get(stream->metadata, "title", NULL, 0);
+                    track.is_forced = (stream->disposition & AV_DISPOSITION_FORCED) || (title && av_stristr(title->value, "forced"));
 
                     track.Encoding       = encoding;
                     track.stream         = stream;

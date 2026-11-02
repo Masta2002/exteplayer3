@@ -532,7 +532,12 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
 								free(TrackList[i].Description);
 							}
 						else
-							sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
+							{
+								if ('s' == argvBuff[0])
+									sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name, TrackList[i].is_forced);
+								else
+									sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
+							}
 						strbuffer_add( ptrManager->tracks_cache, tmp_str );
 
 						free(TrackList[i].Encoding);
@@ -573,7 +578,7 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 }
                 else if ('s' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name);
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name, track->is_forced);
                 }
                 else // video
                 {
