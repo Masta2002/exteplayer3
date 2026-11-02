@@ -37,6 +37,7 @@
 #include <asm/types.h>
 #include <pthread.h>
 #include <errno.h>
+#include <time.h>
 
 #include "stm_ioctls.h"
 #include "bcm_ioctls.h"
@@ -218,4 +219,153 @@ stb_type_t GetSTBType()
     }
 
     return type;
+}
+
+/* Output pacing. The player pushes data as fast as the driver takes it and
+ * relies on the write blocking when the decoder is full. The emulated devices
+ * of some HiSilicon receivers swallow everything, picture and sound then run
+ * too fast. This holds the writes to at most <lead> ms ahead of real time, as
+ * the clock of a GstBaseSink does for gstplayer.
+ *
+ * Off by default, not all of these boxes need it: EP3_OUTPUT_PACING_MS=1500
+ * switches it on. With the RAM buffer it holds the filling of the buffer. */
+typedef struct
+{
+    int64_t wall_us;    /* clock at the anchor               */
+    int64_t pts;        /* PTS at the anchor                 */
+    int64_t last_pts;   /* PTS of the last chunk             */
+} PacingClock_t;
+
+static int32_t g_pacing_lead_ms = -1;
+static pthread_mutex_t g_pacing_mtx = PTHREAD_MUTEX_INITIALIZER;
+static int64_t g_shared_wall_us = -1;
+static int64_t g_shared_pts     = -1;
+
+static PacingClock_t g_pacing[PACING_STREAM_MAX] =
+{
+    { -1, -1, -1 },
+    { -1, -1, -1 },
+};
+
+int32_t OutputPacingLeadMs(void)
+{
+    if (g_pacing_lead_ms < 0)
+    {
+        const char *env = getenv("EP3_OUTPUT_PACING_MS");
+        int32_t lead = env ? atoi(env) : 0;
+        g_pacing_lead_ms = lead > 0 ? lead : 0;
+    }
+    return g_pacing_lead_ms;
+}
+
+void OutputPacingReset(void)
+{
+    int32_t i = 0;
+    pthread_mutex_lock(&g_pacing_mtx);
+    g_shared_wall_us = -1;
+    g_shared_pts     = -1;
+    for (i = 0; i < PACING_STREAM_MAX; ++i)
+    {
+        g_pacing[i].wall_us  = -1;
+        g_pacing[i].pts      = -1;
+        g_pacing[i].last_pts = -1;
+    }
+    pthread_mutex_unlock(&g_pacing_mtx);
+}
+
+static int64_t monotonic_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000LL + (int64_t)ts.tv_nsec / 1000LL;
+}
+
+void OutputPacingWait(void *_context, int32_t stream, int64_t pts)
+{
+    Context_t *context = (Context_t *)_context;
+    int32_t leadMs = OutputPacingLeadMs();
+    PacingClock_t *clk = NULL;
+    int64_t now, jump, target, ahead, maxAhead;
+
+    if (leadMs <= 0 || pts < 0 || pts == (int64_t)INVALID_PTS_VALUE || NULL == context ||
+        stream < 0 || stream >= PACING_STREAM_MAX)
+    {
+        return;
+    }
+
+    clk = &g_pacing[stream];
+    maxAhead = (int64_t)leadMs * 1000LL;
+    /* audio some more ahead, so that its buffer does not run dry */
+    if (stream == PACING_STREAM_AUDIO)
+    {
+        maxAhead += 500000LL;
+    }
+
+    /* the clock stands during a pause, or the delay bursts out after it */
+    if (context->playback->isPaused && clk->wall_us >= 0)
+    {
+        int64_t pauseStart = monotonic_us();
+        int64_t paused;
+        while (context->playback->isPaused && context->playback->isPlaying &&
+               !context->playback->isSeeking && 0 == PlaybackDieNow(0))
+        {
+            usleep(10000);
+        }
+        paused = monotonic_us() - pauseStart;
+        pthread_mutex_lock(&g_pacing_mtx);
+        clk->wall_us += paused;
+        if (stream == PACING_STREAM_VIDEO && g_shared_wall_us >= 0)
+        {
+            g_shared_wall_us += paused;
+        }
+        pthread_mutex_unlock(&g_pacing_mtx);
+    }
+
+    now = monotonic_us();
+
+    pthread_mutex_lock(&g_pacing_mtx);
+    if (g_shared_pts < 0)
+    {
+        g_shared_pts     = pts;
+        g_shared_wall_us = now;
+    }
+
+    if (clk->pts < 0)
+    {
+        clk->pts      = g_shared_pts;
+        clk->wall_us  = g_shared_wall_us;
+        clk->last_pts = pts;
+        pthread_mutex_unlock(&g_pacing_mtx);
+        return;
+    }
+
+    jump          = pts - clk->last_pts;
+    clk->last_pts = pts;
+
+    /* a real jump: anchor again, keeping the lead */
+    if (jump < -90000LL * 2LL || jump > 90000LL * 10LL)
+    {
+        clk->pts         = pts;
+        clk->wall_us     = now + (int64_t)leadMs * 1000LL;
+        g_shared_pts     = clk->pts;
+        g_shared_wall_us = clk->wall_us;
+        pthread_mutex_unlock(&g_pacing_mtx);
+        return;
+    }
+
+    target = g_shared_wall_us + ((pts - g_shared_pts) * 1000LL) / 90LL;
+    pthread_mutex_unlock(&g_pacing_mtx);
+
+    ahead = target - now;
+    while (ahead > maxAhead)
+    {
+        int64_t sleep_us = ahead - maxAhead;
+
+        if (!context->playback->isPlaying || context->playback->isSeeking || 0 != PlaybackDieNow(0))
+        {
+            break;
+        }
+        usleep(sleep_us > 5000LL ? 5000 : (useconds_t)sleep_us);
+        ahead = target - monotonic_us();
+    }
 }
