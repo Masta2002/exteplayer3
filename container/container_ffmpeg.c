@@ -279,6 +279,17 @@ typedef int32_t (* Write_FN) (void  *, void *);
 #define FF_PROFILE_MPEG2_AAC_LOW AV_PROFILE_MPEG2_AAC_LOW
 #endif
 
+/* H.264 above 1080p stays black on the Broadcom decoders, a variant that plays
+ * is better than the largest one */
+static int video_beyond_decoder(const AVCodecParameters *par)
+{
+#ifdef HAVE_DREAMNEXTGEN
+    return 0;
+#else
+    return par->codec_id == AV_CODEC_ID_H264 && par->height > 1088;
+#endif
+}
+
 /* the sample format for an encoder, planar float if it takes that */
 static enum AVSampleFormat get_encoder_sample_fmt(const AVCodec *codec)
 {
@@ -3460,9 +3471,9 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
 
         ffmpeg_printf(1, "cAVIdx[%d]: number of streams: %d\n", cAVIdx, avContext->nb_streams);
 
-#ifdef HAVE_DREAMNEXTGEN
         /* HLS lists the variants as programs, the lowest often first: take
-         * the one with the best video, then the highest bitrate */
+         * the one with the best video, then the highest bitrate. Without
+         * probing the size is often unknown here, the bitrate decides then. */
         if (avContext->nb_programs > 1 && g_sel_program_id <= 0 && 0 == strcmp(avContext->iformat->name, "hls"))
         {
             int64_t bestScore = -1;
@@ -3481,7 +3492,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     AVRational fps = get_frame_rate(s);
                     int64_t score;
 
-                    if (par->codec_type != AVMEDIA_TYPE_VIDEO || par->width <= 0)
+                    if (par->codec_type != AVMEDIA_TYPE_VIDEO || (s->disposition & AV_DISPOSITION_ATTACHED_PIC) || video_beyond_decoder(par))
                         continue;
                     score = (int64_t)par->width * par->height * (fps.den ? 1000 * fps.num / fps.den : 25000);
                     if (score > bestScore || (score == bestScore && rate > bestRate))
@@ -3496,7 +3507,6 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
             }
             ffmpeg_printf(1, "cAVIdx[%d]: HLS variant with %lld bit/s\n", cAVIdx, (long long)bestRate);
         }
-#endif
         if (avContext->nb_programs > 0 && (0 == nb_stream_indexes || stream_index == NULL))
         {
             uint32_t n = 0;
@@ -3522,7 +3532,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                         for (m = 0; m < p->nb_stream_indexes; m++)
                         {
                             AVStream *s = avContext->streams[p->stream_index[m]];
-                            if (get_codecpar(s)->codec_type == AVMEDIA_TYPE_VIDEO && get_codecpar(s)->width > 0)
+                            if (get_codecpar(s)->codec_type == AVMEDIA_TYPE_VIDEO && !(s->disposition & AV_DISPOSITION_ATTACHED_PIC))
                             {
                                 ffmpeg_printf(1, "cAVIdx[%d]: PROGRAM ID: %d, width [%d]\n", cAVIdx, (int32_t)p->id, (int32_t)get_codecpar(s)->width);
                                 stream_index = p->stream_index;
@@ -3549,7 +3559,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                 AVRational rate = get_frame_rate(avContext->streams[i]);
                 int64_t score;
 
-                if (par->codec_type != AVMEDIA_TYPE_VIDEO)
+                if (par->codec_type != AVMEDIA_TYPE_VIDEO || video_beyond_decoder(par))
                     continue;
                 score = (int64_t)par->width * par->height * (rate.den ? 1000 * rate.num / rate.den : 25000);
                 if (score > bestScore || (score == bestScore && par->bit_rate > bestRate))
