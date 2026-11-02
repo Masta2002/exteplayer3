@@ -929,9 +929,9 @@ int main(int argc, char* argv[])
     /* inform client that we can handle additional commands */
 #ifdef HAVE_DREAMNEXTGEN
     /* winds on keyframes with f<speed> and b<speed> */
-    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d,\"trick\":1}}\n", 183);
+    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d,\"trick\":1}}\n", 186);
 #else
-    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d}}\n", 183);
+    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d}}\n", 186);
 #endif
 
     PlayFiles_t playbackFiles;
