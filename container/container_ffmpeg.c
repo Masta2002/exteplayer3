@@ -1635,6 +1635,39 @@ static void updateHevcHdr(Context_t *context, Track_t *track,
 #endif
 }
 
+/* MPEG-TS has no index: a seek by time is a binary search with a new HTTP
+ * connection for every step, up to 30-40 s on a slow server. With a known size
+ * and length the position is estimated instead, in one request. It can land a
+ * few seconds off with a variable bitrate, so a seek to 0 (also the flush at a
+ * track switch) stays exact. */
+static int seek_http_mpegts_by_bytes(AVFormatContext *ctx, int64_t target)
+{
+    int64_t size;
+    int64_t pos;
+
+    if (target <= 0 || !ctx->pb || !ctx->iformat || !ctx->url || ctx->duration <= 0 ||
+        0 != strcmp(ctx->iformat->name, "mpegts") ||
+        (0 != strncmp(ctx->url, "http://", 7) && 0 != strncmp(ctx->url, "https://", 8)))
+    {
+        return 0;
+    }
+
+    size = avio_size(ctx->pb);
+    if (size <= 0)
+    {
+        return 0;
+    }
+
+    pos = (av_rescale(target, size, ctx->duration) / 188) * 188;
+    if (pos >= size)
+    {
+        pos = size > 188 ? size - 188 : 0;
+    }
+
+    ffmpeg_printf(10, "byte seek: pos[%"PRId64"] size[%"PRId64"] duration[%"PRId64"]\n", pos, size, ctx->duration);
+    return avformat_seek_file(ctx, -1, INT64_MIN, pos, INT64_MAX, AVSEEK_FLAG_BYTE) >= 0;
+}
+
 static void FFMPEGThread(Context_t *context)
 {
     char threadname[17];
@@ -1771,6 +1804,7 @@ static void FFMPEGThread(Context_t *context)
             if (do_seek_target_seconds)
             {
                 ffmpeg_printf(10, "seek_target_seconds[%"PRId64"]\n", seek_target_seconds);
+                const int64_t seek_from_start = seek_target_seconds;
                 uint32_t i = 0;
                 for(; i<IPTV_AV_CONTEXT_MAX_NUM; i+=1)
                 {
@@ -1786,7 +1820,10 @@ static void FFMPEGThread(Context_t *context)
                             seek_target_seconds += avContextTab[i]->start_time;
                         }
                         //av_seek_frame(avContextTab[i], -1, seek_target_seconds, 0);
-                        avformat_seek_file(avContextTab[i], -1, INT64_MIN, seek_target_seconds, INT64_MAX, 0);
+                        if (!seek_http_mpegts_by_bytes(avContextTab[i], seek_from_start))
+                        {
+                            avformat_seek_file(avContextTab[i], -1, INT64_MIN, seek_target_seconds, INT64_MAX, 0);
+                        }
                     }
                     else
                     {
