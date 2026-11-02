@@ -55,7 +55,7 @@
 /* ***************************** */
 /* Makros/Constants              */
 /* ***************************** */
-#define IOVEC_SIZE                                      128
+#define IOVEC_SIZE                                      1024
 
 /* ***************************** */
 /* Types                         */
@@ -283,7 +283,7 @@ static int writeData(void* _call)
         uint32_t pos = 0;
         do
         {
-            if (ic >= IOVEC_SIZE)
+            if (ic + 2 > IOVEC_SIZE)
             {
                 h264_err(">> Drop data due to ic overflow\n");
 //                exit(-1);
