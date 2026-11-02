@@ -135,7 +135,8 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
 
             tracklist[j].Id = Tracks[i].Id;
             tracklist[j].Name = strdup(Tracks[i].Name);
-            tracklist[j].Encoding = strdup(Tracks[i].Description ? Tracks[i].Description : Tracks[i].Encoding);
+            tracklist[j].Encoding = strdup(Tracks[i].Encoding);
+            tracklist[j].Description = Tracks[i].Description ? strdup(Tracks[i].Description) : NULL;
             tracklist[j].channels = Tracks[i].channels;
             ++j;
         }
@@ -234,7 +235,8 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
                 memset(track, 0, sizeof(TrackDescription_t));
                 track->Id       = Tracks[CurrentTrack].Id;
                 track->Name     = strdup(Tracks[CurrentTrack].Name);
-                track->Encoding = strdup(Tracks[CurrentTrack].Description ? Tracks[CurrentTrack].Description : Tracks[CurrentTrack].Encoding);
+                track->Encoding = strdup(Tracks[CurrentTrack].Encoding);
+                track->Description = Tracks[CurrentTrack].Description ? strdup(Tracks[CurrentTrack].Description) : NULL;
                 track->channels = Tracks[CurrentTrack].channels;
             }
         }

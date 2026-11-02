@@ -527,7 +527,10 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
 						}
 
 						if ('a' == argvBuff[0])
-							sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name, TrackList[i].channels);
+							{
+								sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name, TrackList[i].channels, TrackList[i].Description ? TrackList[i].Description : "");
+								free(TrackList[i].Description);
+							}
 						else
 							sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
 						strbuffer_add( ptrManager->tracks_cache, tmp_str );
@@ -565,7 +568,8 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
             {
                 if ('a' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name, track->channels);
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name, track->channels, track->Description ? track->Description : "");
+                    free(track->Description);
                 }
                 else if ('s' == argvBuff[0])
                 {

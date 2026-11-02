@@ -84,6 +84,7 @@ typedef struct TrackDescription_s
     int                   Id;
     char *                Name;
     char *                Encoding;
+    char *                Description;
     unsigned int          frame_rate;
     int                   width;
     int                   height;
