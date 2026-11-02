@@ -4180,8 +4180,13 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
             case AVMEDIA_TYPE_ATTACHMENT:
             case AVMEDIA_TYPE_NB:
             default:
-                stream->discard = AVDISCARD_ALL;
-                ffmpeg_err("not handled or unknown codec_type %d\n", get_codecpar(stream)->codec_type);
+                /* private MPEG-TS stream types are not known yet: FFmpeg only
+                 * probes them when they are not discarded */
+                if (get_codecpar(stream)->codec_id != AV_CODEC_ID_NONE)
+                {
+                    stream->discard = AVDISCARD_ALL;
+                    ffmpeg_err("not handled or unknown codec_type %d\n", get_codecpar(stream)->codec_type);
+                }
              break;
             }
         } /* for */
