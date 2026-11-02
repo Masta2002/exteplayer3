@@ -138,6 +138,17 @@ static WriterCaps_t caps_mpegl3 = {
     -1
 };
 
+#ifndef HAVE_DREAMNEXTGEN
+/* a Dreambox gives no sound for MP2 as type MP3 */
+__attribute__((constructor)) static void InitMpegL3Caps(void)
+{
+    if (STB_DREAMBOX == GetSTBType())
+    {
+        caps_mpegl3.dvbStreamType = AUDIOTYPE_MPEG;
+    }
+}
+#endif
+
 struct Writer_s WriterAudioMPEGL3 = {
     &reset,
     &writeData,
