@@ -403,7 +403,7 @@ static int writeData(void* _call)
          * wrap. writev skips entries with iov_len=0. */
         iov[0].iov_len = 0;
 #else
-        iov[0].iov_len = InsertPesHeader(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, FakeStartCode);
+        iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, FakeStartCode);
 #endif
 
         return call->WriteV(call->fd, iov, ic);
@@ -530,7 +530,7 @@ static int writeData(void* _call)
 #ifdef HAVE_DREAMNEXTGEN
         iov[0].iov_len = 0;
 #else
-        iov[0].iov_len = InsertPesHeader(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, 0);
+        iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, 0);
 #endif
 
         len = call->WriteV(call->fd, iov, ic);
