@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -127,6 +128,72 @@ void FlushBits(BitPacker_t * ld)
     ld->BitBuffer = 0;
 }
 
+static bool ReadFirstLineLower(const char *path, char *buf, size_t bufSize)
+{
+    FILE *f = fopen(path, "r");
+    size_t i = 0;
+
+    if (NULL == f)
+    {
+        return false;
+    }
+    if (NULL == fgets(buf, (int)bufSize, f))
+    {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+
+    for (i = 0; buf[i] != '\0'; ++i)
+    {
+        if (buf[i] == '\n' || buf[i] == '\r')
+        {
+            buf[i] = '\0';
+            break;
+        }
+        if (buf[i] >= 'A' && buf[i] <= 'Z')
+        {
+            buf[i] = (char)(buf[i] - 'A' + 'a');
+        }
+    }
+    return true;
+}
+
+/* Not all HiSilicon receivers (Qviart Dual/Lunix 4K, Zgemma H9/H11, Octagon
+ * SX8x, Edision OS Mio+ 4K, ...) have the device tree node. */
+static bool IsHiSiliconSTB()
+{
+    static const char *markers[] = {
+        "/sys/firmware/devicetree/base/soc/hisilicon_clock/name",
+        "/proc/hisi",
+        "/dev/hi_mem",
+        "/dev/hi_dmx",
+        "/sys/module/hi_media",
+        NULL
+    };
+    char buf[128];
+    int i = 0;
+
+    for (i = 0; markers[i] != NULL; ++i)
+    {
+        if (access(markers[i], F_OK) != -1)
+        {
+            return true;
+        }
+    }
+
+    /* e.g. "hi3798mv200" */
+    if (ReadFirstLineLower("/proc/stb/info/chipset", buf, sizeof(buf)))
+    {
+        if (0 == strncmp(buf, "hi3", 3) || NULL != strstr(buf, "hisi"))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 stb_type_t GetSTBType()
 {
     static stb_type_t type = STB_UNKNOWN;
@@ -142,7 +209,7 @@ stb_type_t GetSTBType()
             // please see: https://gitlab.com/e2i/e2iplayer/issues/282
             type = STB_VUPLUS;
         }
-        else if (access("/sys/firmware/devicetree/base/soc/hisilicon_clock/name", F_OK) != -1) {
+        else if (IsHiSiliconSTB()) {
             type = STB_HISILICON;
         }
         else {
