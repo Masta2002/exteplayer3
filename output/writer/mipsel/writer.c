@@ -109,6 +109,25 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
 
     while(size > 0 && 0 == PlaybackDieNow(0) && !context->playback->isSeeking)
     {
+        const bool hisilicon = STB_HISILICON == GetSTBType();
+
+        /* the emulated devices may never report that they are ready, which
+         * costs a timeout for every packet: write first, wait only when full */
+        if (hisilicon)
+        {
+            ret = write(fd, buf, size);
+            if (ret > 0)
+            {
+                size -= ret;
+                buf += ret;
+                continue;
+            }
+            if (ret < 0 && errno != EINTR && errno != EAGAIN)
+            {
+                break;
+            }
+        }
+
         FD_ZERO(&rfds);
         FD_ZERO(&wfds);
 
@@ -127,7 +146,9 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
         //tv.tv_sec = 0;
         //tv.tv_usec = 100000; // 100ms
 
-        retval = select(maxFd + 1, &rfds, &wfds, NULL, NULL); //&tv);
+        tv.tv_sec = 0;
+        tv.tv_usec = 50000; // 50ms
+        retval = select(maxFd + 1, &rfds, &wfds, NULL, hisilicon ? &tv : NULL);
         if (retval < 0)
         {
             break;
