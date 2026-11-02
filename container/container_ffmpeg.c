@@ -331,6 +331,9 @@ static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_
 }
 
 
+/* the demuxer returned a real EOF, not only an error */
+static uint8_t readEofReached = 0;
+
 #include "buff_ffmpeg.c"
 #include "wrapped_ffmpeg.c"
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
@@ -1845,6 +1848,7 @@ static void FFMPEGThread(Context_t *context)
             }
             do_seek_target_seconds = false;
             do_seek_target_bytes = false;
+            readEofReached = 0;
 
             restart_audio_resampling = 1;
             currentVideoPts = -1;
@@ -2707,6 +2711,11 @@ static void FFMPEGThread(Context_t *context)
             {
                 static char errbuf[256];
 
+                if (ffmpegStatus == AVERROR_EOF)
+                {
+                    readEofReached = 1;
+                }
+
                 if( 0 == av_strerror(ffmpegStatus, errbuf, sizeof(errbuf)) )
                 {
                     /* In this way we inform user about error within the core
@@ -2723,7 +2732,7 @@ static void FFMPEGThread(Context_t *context)
                 ffmpegStatus = 0;
             }
 
-            if(!is_finish_timeout() && !context->playback->isTSLiveMode)
+            if(!is_read_finish_timeout() && !context->playback->isTSLiveMode)
             {
                 isWaitingForFinish = 1;
                 update_finish_timeout();

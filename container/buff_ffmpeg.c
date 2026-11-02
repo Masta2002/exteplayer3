@@ -87,6 +87,18 @@ static int8_t is_finish_timeout()
     return 0;
 }
 
+static int8_t is_network_stream()
+{
+    const char *url = avContextTab[0] ? avContextTab[0]->url : NULL;
+    return url && strstr(url, "://") && 0 != strncmp(url, "file://", 7);
+}
+
+/* a read error of a network stream gets 10 s, its length can be wrong */
+static int8_t is_read_finish_timeout()
+{
+    return finishTimeout > (is_network_stream() && !readEofReached ? 100 : TIMEOUT_MAX_ITERS);
+}
+
 static void update_finish_timeout()
 {
     if(0 == pauseTimeout)
@@ -106,7 +118,7 @@ static void update_finish_timeout()
         /* On some STBs PTS readed from decoder is invalid after seek or at start
          * this is the reason for additional validation when we what to close immediately
          */
-        if( !progressive_playback && 0 == ret && currPts >= maxInjectedPts &&
+        if( (!is_network_stream() || readEofReached) && !progressive_playback && 0 == ret && currPts >= maxInjectedPts &&
             ((currPts - maxInjectedPts) / 90000) < 2 )
         {
             /* close immediately
