@@ -281,17 +281,6 @@ typedef int32_t (* Write_FN) (void  *, void *);
 #define FF_PROFILE_MPEG2_AAC_LOW AV_PROFILE_MPEG2_AAC_LOW
 #endif
 
-/* H.264 above 1080p stays black on the Broadcom decoders, a variant that plays
- * is better than the largest one */
-static int video_beyond_decoder(const AVCodecParameters *par)
-{
-#ifdef HAVE_DREAMNEXTGEN
-    return 0;
-#else
-    return par->codec_id == AV_CODEC_ID_H264 && par->height > 1088;
-#endif
-}
-
 /* the sample format for an encoder, planar float if it takes that */
 static enum AVSampleFormat get_encoder_sample_fmt(const AVCodec *codec)
 {
@@ -357,6 +346,18 @@ static uint8_t readEofReached = 0;
 #ifdef HAVE_FLV2MPEG4_CONVERTER
 #include "flv2mpeg4_ffmpeg.c"
 #endif
+
+/* Which variant of a HLS stream: the box decoders differ too much (4K, HEVC) to
+ * take the best one everywhere. DreamNextGen does, others with -Q. */
+#ifdef HAVE_DREAMNEXTGEN
+static int32_t hls_best_variant = 1;
+#else
+static int32_t hls_best_variant = 0;
+#endif
+void hls_best_variant_set(const int32_t val)
+{
+    hls_best_variant = val;
+}
 
 /* This is also bad solution
  * such configuration should passed maybe
@@ -855,6 +856,13 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
         ffmpeg_err("Codec ID %d (%.8x) not found\n", codec_id, codec_id);
     }
     return NULL;
+}
+
+/* AV1 and the like have no writer, a variant with them never plays */
+static int video_has_writer(const AVCodecParameters *par)
+{
+    int32_t version = 0;
+    return NULL != Codec2Encoding((int32_t)par->codec_id, (int32_t)par->codec_type, par->extradata, par->extradata_size, par->profile, &version);
 }
 
 static int64_t doCalcPts(int64_t start_time, const AVRational time_base, int64_t pts)
@@ -3725,7 +3733,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         /* HLS lists the variants as programs, the lowest often first: take
          * the one with the best video, then the highest bitrate. Without
          * probing the size is often unknown here, the bitrate decides then. */
-        if (avContext->nb_programs > 1 && g_sel_program_id <= 0 && 0 == strcmp(avContext->iformat->name, "hls"))
+        if (hls_best_variant && avContext->nb_programs > 1 && g_sel_program_id <= 0 && 0 == strcmp(avContext->iformat->name, "hls"))
         {
             int64_t bestScore = -1;
             int64_t bestRate = -1;
@@ -3743,7 +3751,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     AVRational fps = get_frame_rate(s);
                     int64_t score;
 
-                    if (par->codec_type != AVMEDIA_TYPE_VIDEO || (s->disposition & AV_DISPOSITION_ATTACHED_PIC) || video_beyond_decoder(par))
+                    if (par->codec_type != AVMEDIA_TYPE_VIDEO || (s->disposition & AV_DISPOSITION_ATTACHED_PIC) || !video_has_writer(par))
                         continue;
                     score = (int64_t)par->width * par->height * (fps.den ? 1000 * fps.num / fps.den : 25000);
                     if (score > bestScore || (score == bestScore && rate > bestRate))
@@ -3783,7 +3791,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                         for (m = 0; m < p->nb_stream_indexes; m++)
                         {
                             AVStream *s = avContext->streams[p->stream_index[m]];
-                            if (get_codecpar(s)->codec_type == AVMEDIA_TYPE_VIDEO && !(s->disposition & AV_DISPOSITION_ATTACHED_PIC))
+                            if (get_codecpar(s)->codec_type == AVMEDIA_TYPE_VIDEO && !(s->disposition & AV_DISPOSITION_ATTACHED_PIC) && video_has_writer(get_codecpar(s)))
                             {
                                 ffmpeg_printf(1, "cAVIdx[%d]: PROGRAM ID: %d, width [%d]\n", cAVIdx, (int32_t)p->id, (int32_t)get_codecpar(s)->width);
                                 stream_index = p->stream_index;
@@ -3810,7 +3818,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                 AVRational rate = get_frame_rate(avContext->streams[i]);
                 int64_t score;
 
-                if (par->codec_type != AVMEDIA_TYPE_VIDEO || video_beyond_decoder(par))
+                if (par->codec_type != AVMEDIA_TYPE_VIDEO || !video_has_writer(par))
                     continue;
                 score = (int64_t)par->width * par->height * (rate.den ? 1000 * rate.num / rate.den : 25000);
                 if (score > bestScore || (score == bestScore && par->bit_rate > bestRate))

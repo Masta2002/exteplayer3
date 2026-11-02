@@ -59,6 +59,7 @@ extern void       truehd_software_decoder_set(const int32_t val);
 extern void       dts_ac3_transcoder_set(const int32_t val);
 extern void       truehd_ac3_transcoder_set(const int32_t val);
 extern void       aac_he_transcoder_set(const int32_t val);
+extern void       hls_best_variant_set(const int32_t val);
 extern void       wma_software_decoder_set(const int32_t val);
 extern void       ac3_software_decoder_set(const int32_t val);
 extern void       eac3_software_decoder_set(const int32_t val);
@@ -675,7 +676,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dDXYlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:")) != -1)
+    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dDXYQlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:")) != -1)
     {
         switch (c)
         {
@@ -737,6 +738,10 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         case 'Y':
             printf("HE-AAC will be transcoded to AAC-LC\n");
             aac_he_transcoder_set(1);
+            break;
+        case 'Q':
+            printf("The best HLS variant will be played\n");
+            hls_best_variant_set(1);
             break;
         case 'm':
             printf("Software decoder will be used for MP3 codec\n");
@@ -948,6 +953,7 @@ int main(int argc, char* argv[])
         printf("[-D] DTS / DTS-HD transcoding to AC3 5.1\n");
         printf("[-X] TrueHD transcoding to AC3 5.1\n");
         printf("[-Y] HE-AAC transcoding to AAC-LC\n");
+        printf("[-Q] play the best HLS variant instead of the first\n");
         printf("[-m] MP3 software decoding\n");
         printf("[-A 0|1] disable|enable AMR software decoding\n");
         printf("[-V 0|1] disable|enable VORBIS software decoding\n");
