@@ -624,7 +624,7 @@ int LinuxDvbAVSync(Context_t  *context, char *type __attribute__((unused))) {
     return ret;
 }
 
-int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
+int LinuxDvbClear(Context_t  *context, char *type)
 {
     int32_t ret = cERR_LINUXDVB_NO_ERROR;
     uint8_t video = !strcmp("video", type);
@@ -651,6 +651,37 @@ int LinuxDvbClear(Context_t  *context __attribute__((unused)), char *type)
                 linuxdvb_err("AUDIO_CLEAR_BUFFER: ERROR %d, %s\n", errno, strerror(errno));
                 ret = cERR_LINUXDVB_ERROR;
             }
+#ifndef HAVE_DREAMNEXTGEN
+            /* There is no hardware decoder behind software decoded audio, and
+             * the driver mostly ignores the clear: without a new start the
+             * sound can stay away after a seek. */
+            if (context && context->manager && context->manager->audio)
+            {
+                char *Encoding = NULL;
+                context->manager->audio->Command(context, MANAGER_GETENCODING, &Encoding);
+                if (Encoding)
+                {
+                    Writer_t *writer = getWriter(Encoding);
+                    if (writer && writer->caps && AUDIOTYPE_RAW == writer->caps->dvbStreamType)
+                    {
+                        if (ioctl(audiofd, AUDIO_SET_BYPASS_MODE, LinuxDvbMapBypassMode(writer->caps->dvbStreamType, true)) < 0)
+                        {
+                            ioctl(audiofd, AUDIO_SET_BYPASS_MODE, LinuxDvbMapBypassMode(writer->caps->dvbStreamType, false));
+                        }
+                        if (ioctl(audiofd, AUDIO_PLAY) == -1)
+                        {
+                            linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
+                            ret = cERR_LINUXDVB_ERROR;
+                        }
+                        if (!context->playback->isPaused && ioctl(audiofd, AUDIO_CONTINUE) == -1)
+                        {
+                            linuxdvb_err("AUDIO_CONTINUE: ERROR %d, %s\n", errno, strerror(errno));
+                        }
+                    }
+                    free(Encoding);
+                }
+            }
+#endif
         }
 
         releaseLinuxDVBMutex();
