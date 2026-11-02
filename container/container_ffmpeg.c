@@ -229,6 +229,84 @@ static void releaseSeekMutex()
 
 typedef int32_t (* Write_FN) (void  *, void *);
 
+/* FFmpeg dropped the FF_PROFILE_ names for AV_PROFILE_ */
+#if !defined(FF_PROFILE_AAC_ELD) && defined(AV_PROFILE_AAC_ELD)
+#define FF_PROFILE_AAC_ELD AV_PROFILE_AAC_ELD
+#endif
+#if !defined(FF_PROFILE_AAC_HE) && defined(AV_PROFILE_AAC_HE)
+#define FF_PROFILE_AAC_HE AV_PROFILE_AAC_HE
+#endif
+#if !defined(FF_PROFILE_AAC_HE_V2) && defined(AV_PROFILE_AAC_HE_V2)
+#define FF_PROFILE_AAC_HE_V2 AV_PROFILE_AAC_HE_V2
+#endif
+#if !defined(FF_PROFILE_AAC_LD) && defined(AV_PROFILE_AAC_LD)
+#define FF_PROFILE_AAC_LD AV_PROFILE_AAC_LD
+#endif
+#if !defined(FF_PROFILE_AAC_LOW) && defined(AV_PROFILE_AAC_LOW)
+#define FF_PROFILE_AAC_LOW AV_PROFILE_AAC_LOW
+#endif
+#if !defined(FF_PROFILE_AAC_USAC) && defined(AV_PROFILE_AAC_USAC)
+#define FF_PROFILE_AAC_USAC AV_PROFILE_AAC_USAC
+#endif
+#if !defined(FF_PROFILE_DTS_96_24) && defined(AV_PROFILE_DTS_96_24)
+#define FF_PROFILE_DTS_96_24 AV_PROFILE_DTS_96_24
+#endif
+#if !defined(FF_PROFILE_DTS_ES) && defined(AV_PROFILE_DTS_ES)
+#define FF_PROFILE_DTS_ES AV_PROFILE_DTS_ES
+#endif
+#if !defined(FF_PROFILE_DTS_EXPRESS) && defined(AV_PROFILE_DTS_EXPRESS)
+#define FF_PROFILE_DTS_EXPRESS AV_PROFILE_DTS_EXPRESS
+#endif
+#if !defined(FF_PROFILE_DTS_HD_HRA) && defined(AV_PROFILE_DTS_HD_HRA)
+#define FF_PROFILE_DTS_HD_HRA AV_PROFILE_DTS_HD_HRA
+#endif
+#if !defined(FF_PROFILE_DTS_HD_MA) && defined(AV_PROFILE_DTS_HD_MA)
+#define FF_PROFILE_DTS_HD_MA AV_PROFILE_DTS_HD_MA
+#endif
+#if !defined(FF_PROFILE_DTS_HD_MA_X) && defined(AV_PROFILE_DTS_HD_MA_X)
+#define FF_PROFILE_DTS_HD_MA_X AV_PROFILE_DTS_HD_MA_X
+#endif
+#if !defined(FF_PROFILE_DTS_HD_MA_X_IMAX) && defined(AV_PROFILE_DTS_HD_MA_X_IMAX)
+#define FF_PROFILE_DTS_HD_MA_X_IMAX AV_PROFILE_DTS_HD_MA_X_IMAX
+#endif
+#if !defined(FF_PROFILE_EAC3_DDP_ATMOS) && defined(AV_PROFILE_EAC3_DDP_ATMOS)
+#define FF_PROFILE_EAC3_DDP_ATMOS AV_PROFILE_EAC3_DDP_ATMOS
+#endif
+#if !defined(FF_PROFILE_MPEG2_AAC_HE) && defined(AV_PROFILE_MPEG2_AAC_HE)
+#define FF_PROFILE_MPEG2_AAC_HE AV_PROFILE_MPEG2_AAC_HE
+#endif
+#if !defined(FF_PROFILE_MPEG2_AAC_LOW) && defined(AV_PROFILE_MPEG2_AAC_LOW)
+#define FF_PROFILE_MPEG2_AAC_LOW AV_PROFILE_MPEG2_AAC_LOW
+#endif
+
+/* the sample format for an encoder, planar float if it takes that */
+static enum AVSampleFormat get_encoder_sample_fmt(const AVCodec *codec)
+{
+    const enum AVSampleFormat *fmt = NULL;
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
+    int count = 0;
+    if (avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, (const void **)&fmt, &count) < 0)
+    {
+        fmt = NULL;
+    }
+#else
+    fmt = codec->sample_fmts;
+#endif
+    if (fmt && *fmt != AV_SAMPLE_FMT_NONE)
+    {
+        const enum AVSampleFormat *it = fmt;
+        for (; *it != AV_SAMPLE_FMT_NONE; ++it)
+        {
+            if (*it == AV_SAMPLE_FMT_FLTP)
+            {
+                return AV_SAMPLE_FMT_FLTP;
+            }
+        }
+        return *fmt;
+    }
+    return AV_SAMPLE_FMT_FLTP;
+}
+
 static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_t pts)
 {
     /* Because Write is blocking we will release mutex which protect
@@ -888,21 +966,7 @@ static int AACLCTranscoderInit(AACLCTranscoderState *state, AVCodecContext *deco
 
     state->encoder->bit_rate = 128000;
     state->encoder->sample_rate = decoder->sample_rate;
-    state->encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
-    if (codec->sample_fmts)
-    {
-        const enum AVSampleFormat *fmt = codec->sample_fmts;
-        state->encoder->sample_fmt = *fmt;
-        while (*fmt != AV_SAMPLE_FMT_NONE)
-        {
-            if (*fmt == AV_SAMPLE_FMT_FLTP)
-            {
-                state->encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
-                break;
-            }
-            ++fmt;
-        }
-    }
+    state->encoder->sample_fmt = get_encoder_sample_fmt(codec);
     state->encoder->profile = FF_PROFILE_AAC_LOW;
     state->encoder->time_base = (AVRational){1, state->encoder->sample_rate};
 #if HAVE_CH_LAYOUT
@@ -1217,21 +1281,7 @@ static int AC3TranscoderInit(AC3TranscoderState *state, AVCodecContext *decoder,
 
     state->encoder->bit_rate = 640000;
     state->encoder->sample_rate = 48000;
-    state->encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
-    if (codec->sample_fmts)
-    {
-        const enum AVSampleFormat *fmt = codec->sample_fmts;
-        state->encoder->sample_fmt = *fmt;
-        while (*fmt != AV_SAMPLE_FMT_NONE)
-        {
-            if (*fmt == AV_SAMPLE_FMT_FLTP)
-            {
-                state->encoder->sample_fmt = AV_SAMPLE_FMT_FLTP;
-                break;
-            }
-            ++fmt;
-        }
-    }
+    state->encoder->sample_fmt = get_encoder_sample_fmt(codec);
     state->encoder->time_base = (AVRational){1, 48000};
 #if HAVE_CH_LAYOUT
     av_channel_layout_from_mask(&state->encoder->ch_layout, AV_CH_LAYOUT_5POINT1);
