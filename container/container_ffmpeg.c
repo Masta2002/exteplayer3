@@ -758,6 +758,10 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
             MPEG4AudioConfig m4ac;
             int off = avpriv_mpeg4audio_get_config(&m4ac, extradata, extradata_size * 8, 1);
             ffmpeg_printf(1,"aac [%d] off[%d]\n", m4ac.object_type, off);
+            /* xHE-AAC (USAC): no box decoder, FFmpeg decodes it since 7.1 */
+            if (off >= 0 && m4ac.object_type == 42) {
+                return "A_IPCM";
+            }
             if (off < 0) {
                 return "A_IPCM";
             }
