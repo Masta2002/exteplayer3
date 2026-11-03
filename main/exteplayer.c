@@ -60,6 +60,8 @@ extern void       dts_ac3_transcoder_set(const int32_t val);
 extern void       truehd_ac3_transcoder_set(const int32_t val);
 extern void       aac_he_transcoder_set(const int32_t val);
 extern void       hls_best_variant_set(const int32_t val);
+extern int        container_ffmpeg_audio_info_gen(void);
+static int        audioInfoGenSeen = -1;
 extern void       wma_software_decoder_set(const int32_t val);
 extern void       ac3_software_decoder_set(const int32_t val);
 extern void       eac3_software_decoder_set(const int32_t val);
@@ -160,8 +162,9 @@ void E2iSendMsg(const char *format, ...)
  * stream (track names) and urls. Four buffers, for one message. */
 static const char *JsonEsc(const char *s)
 {
-    static char ring[4][1024];
-    static int slot = 0;
+    /* track messages come from the command and the FFmpeg thread */
+    static __thread char ring[4][1024];
+    static __thread int slot = 0;
     char *out = ring[slot];
     size_t o = 0;
 
@@ -548,6 +551,16 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
     {
         case 'l':
         {
+            /* the audio list changes with the stream (channels, Atmos) */
+            if ('a' == argvBuff[0] && ptrManager->tracks_cache && audioInfoGenSeen != container_ffmpeg_audio_info_gen())
+            {
+                strbuffer_free( ptrManager->tracks_cache );
+                ptrManager->tracks_cache = NULL;
+            }
+            if ('a' == argvBuff[0])
+            {
+                audioInfoGenSeen = container_ffmpeg_audio_info_gen();
+            }
         	if( ptrManager->tracks_cache == NULL )
         	{
         		/* read tracks info into cache */
@@ -679,6 +692,10 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                                     id = TrackList[i].Id;
                                 }
                                 free(TrackList[i].Encoding);
+                                if ('a' == argvBuff[0])
+                                {
+                                    free(TrackList[i].Description);
+                                }
                                 free(TrackList[i].Name);
                             }
                             free(TrackList);

@@ -336,6 +336,13 @@ static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_
 }
 
 
+/* changes when channels or Atmos of an audio track change */
+static volatile int audioInfoGen = 0;
+int container_ffmpeg_audio_info_gen(void)
+{
+    return audioInfoGen;
+}
+
 /* input of the software audio resampler */
 static int32_t swr_in_channels = 0;
 static int32_t swr_in_rate = 0;
@@ -2277,11 +2284,13 @@ static void eac3_atmos_feed(int32_t track_id, const uint8_t *data, size_t size)
     if (g_eac3_atmos_verdict != 1 && g_eac3_atmos_pos >= EAC3_ATMOS_CONFIRM_PACKETS)
     {
         g_eac3_atmos_verdict = 1;
+        ++audioInfoGen;
         ffmpeg_printf(1, "E-AC3 Atmos (JOC) detected on audio track %d\n", (int)track_id);
     }
     else if (g_eac3_atmos_verdict == 1 && g_eac3_atmos_neg >= EAC3_ATMOS_LOST_PACKETS)
     {
         g_eac3_atmos_verdict = 0;
+        ++audioInfoGen;
         g_eac3_atmos_pos     = 0;
         ffmpeg_printf(1, "E-AC3 Atmos (JOC) no longer present on audio track %d\n", (int)track_id);
     }
@@ -3104,6 +3113,7 @@ static void FFMPEGThread(Context_t *context)
                             ffmpeg_printf(10, "audio channel count changed %d -> %d\n",
                                 audioTrack->channels, decoded_channels);
                             audioTrack->channels = decoded_channels;
+                            ++audioInfoGen;
                         }
                         if (audioTrack->transcode_to_ac3)
                         {
