@@ -924,6 +924,9 @@ typedef struct
     AVAudioFifo *fifo;
     int64_t next_pts;
     int track_id;
+    int in_channels;
+    int in_rate;
+    int in_format;
 } AC3TranscoderState;
 
 /* HE-AAC is decoded by FFmpeg and re-encoded as plain AAC-LC before it reaches
@@ -969,6 +972,9 @@ typedef struct
     AVAudioFifo *fifo;
     int64_t next_pts;
     int track_id;
+    int in_channels;
+    int in_rate;
+    int in_format;
 } AACLCTranscoderState;
 
 static void AACLCTranscoderClose(AACLCTranscoderState *state)
@@ -1238,18 +1244,39 @@ static int AACLCTranscoderProcess(AACLCTranscoderState *state, Context_t *contex
     int out_samples;
     int ret;
 
-    if (!state->encoder || state->track_id != track->Id)
+#if HAVE_CH_LAYOUT
+    const int in_channels = decoded->ch_layout.nb_channels;
+#else
+    const int in_channels = decoded->channels;
+#endif
+    /* the setup is for the first frame: a change from 5.1 to stereo or of the
+     * rate needs a new one */
+    if (!state->encoder || state->track_id != track->Id ||
+        in_channels != state->in_channels || decoded->sample_rate != state->in_rate || decoded->format != state->in_format)
     {
         AACLCTranscoderClose(state);
         if (AACLCTranscoderInit(state, decoder, track->Id) < 0)
             return -1;
+        state->in_channels = in_channels;
+        state->in_rate = decoded->sample_rate;
+        state->in_format = decoded->format;
     }
 
-    if (state->next_pts == INVALID_PTS_VALUE)
     {
-        state->next_pts = calcPts(av_context_idx, track->stream, wrapped_frame_get_best_effort_timestamp(decoded));
+        /* follow a jump of the stream (live discontinuity) without a seek */
+        int64_t frame_pts = calcPts(av_context_idx, track->stream, wrapped_frame_get_best_effort_timestamp(decoded));
+        if (frame_pts != INVALID_PTS_VALUE && state->next_pts != INVALID_PTS_VALUE &&
+            (frame_pts - state->next_pts > 180000 || state->next_pts - frame_pts > 180000))
+        {
+            av_audio_fifo_reset(state->fifo);
+            state->next_pts = INVALID_PTS_VALUE;
+        }
         if (state->next_pts == INVALID_PTS_VALUE)
-            state->next_pts = packet_pts;
+        {
+            state->next_pts = frame_pts;
+            if (state->next_pts == INVALID_PTS_VALUE)
+                state->next_pts = packet_pts;
+        }
     }
 
     int channels;
@@ -1504,18 +1531,39 @@ static int AC3TranscoderProcess(AC3TranscoderState *state, Context_t *context, A
     int out_samples;
     int ret;
 
-    if (!state->encoder || state->track_id != track->Id)
+#if HAVE_CH_LAYOUT
+    const int in_channels = decoded->ch_layout.nb_channels;
+#else
+    const int in_channels = decoded->channels;
+#endif
+    /* the setup is for the first frame: a change from 5.1 to stereo or of the
+     * rate needs a new one */
+    if (!state->encoder || state->track_id != track->Id ||
+        in_channels != state->in_channels || decoded->sample_rate != state->in_rate || decoded->format != state->in_format)
     {
         AC3TranscoderClose(state);
         if (AC3TranscoderInit(state, decoder, track->Id) < 0)
             return -1;
+        state->in_channels = in_channels;
+        state->in_rate = decoded->sample_rate;
+        state->in_format = decoded->format;
     }
 
-    if (state->next_pts == INVALID_PTS_VALUE)
     {
-        state->next_pts = calcPts(av_context_idx, track->stream, wrapped_frame_get_best_effort_timestamp(decoded));
+        /* follow a jump of the stream (live discontinuity) without a seek */
+        int64_t frame_pts = calcPts(av_context_idx, track->stream, wrapped_frame_get_best_effort_timestamp(decoded));
+        if (frame_pts != INVALID_PTS_VALUE && state->next_pts != INVALID_PTS_VALUE &&
+            (frame_pts - state->next_pts > 180000 || state->next_pts - frame_pts > 180000))
+        {
+            av_audio_fifo_reset(state->fifo);
+            state->next_pts = INVALID_PTS_VALUE;
+        }
         if (state->next_pts == INVALID_PTS_VALUE)
-            state->next_pts = packet_pts;
+        {
+            state->next_pts = frame_pts;
+            if (state->next_pts == INVALID_PTS_VALUE)
+                state->next_pts = packet_pts;
+        }
     }
 
     out_samples = av_rescale_rnd(swr_get_delay(state->swr, decoder->sample_rate) + decoded->nb_samples,
@@ -3093,6 +3141,8 @@ static void FFMPEGThread(Context_t *context)
                             ffmpeg_printf(10, "audio input changed, new resampler\n");
                             swr_free(&swr);
                             swr = NULL;
+                            /* the PCM writer has to take the new format */
+                            restart_audio_resampling = 1;
                         }
                         if (!swr)
                         {
