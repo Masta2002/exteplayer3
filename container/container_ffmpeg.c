@@ -126,6 +126,8 @@ static int32_t restart_audio_resampling = 0;
 
 static int64_t g_seek_target_seconds = 0;
 static bool g_do_seek_target_seconds = false;
+/* a relative seek by 0: the flush of a track switch, it has to stay exact */
+static bool g_seek_flush_only = false;
 
 #ifdef HAVE_DREAMNEXTGEN
 /* After a seek audio starts with the first video keyframe: the kernel syncs
@@ -1904,8 +1906,8 @@ static void ls_on_video(Context_t *context, int64_t pts)
 /* MPEG-TS has no index: a seek by time is a binary search with a new HTTP
  * connection for every step, up to 30-40 s on a slow server. With a known size
  * and length the position is estimated instead, in one request. It can land a
- * few seconds off with a variable bitrate, so a seek to 0 (also the flush at a
- * track switch) stays exact. */
+ * few seconds off with a variable bitrate, so a seek to 0 and the flush of a
+ * track switch (a relative seek by 0) stay exact. */
 static int seek_http_mpegts_by_bytes(AVFormatContext *ctx, int64_t target)
 {
     int64_t size;
@@ -2424,6 +2426,7 @@ static void FFMPEGThread(Context_t *context)
     bool do_seek_target_bytes = false;
     int64_t prev_seek_time_sec = -1;
     void *stamp = context->playback->stamp;
+    bool seek_flush_only = false;
 
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
 #ifdef __sh__
@@ -2494,6 +2497,7 @@ static void FFMPEGThread(Context_t *context)
         {
             do_seek_target_seconds = g_do_seek_target_seconds;
             seek_target_seconds = g_seek_target_seconds;
+            seek_flush_only = g_seek_flush_only;
             stamp = g_stamp;
             g_do_seek_target_seconds = false;
         }
@@ -2523,7 +2527,7 @@ static void FFMPEGThread(Context_t *context)
                             seek_target_seconds += avContextTab[i]->start_time;
                         }
                         //av_seek_frame(avContextTab[i], -1, seek_target_seconds, 0);
-                        if (!seek_http_mpegts_by_bytes(avContextTab[i], seek_from_start))
+                        if (seek_flush_only || !seek_http_mpegts_by_bytes(avContextTab[i], seek_from_start))
                         {
                             avformat_seek_file(avContextTab[i], -1, INT64_MIN, seek_target_seconds, INT64_MAX, 0);
                         }
@@ -5273,6 +5277,7 @@ static int32_t container_ffmpeg_trick_pts(int64_t *pts)
 
 static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t absolute)
 {
+    bool flush_only = false;
     Track_t *videoTrack = NULL;
     Track_t *audioTrack = NULL;
     Track_t *current = NULL;
@@ -5310,6 +5315,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
             return cERR_CONTAINER_FFMPEG_ERR;
         }
 
+        flush_only = (sec == 0);
         sec += cur_sec;
     }
 
@@ -5344,6 +5350,7 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
     getSeekMutex();
     g_seek_target_seconds = sec * AV_TIME_BASE;
     g_do_seek_target_seconds = true;
+    g_seek_flush_only = flush_only;
     g_stamp = context->playback->stamp;
     releaseSeekMutex();
 
