@@ -1924,7 +1924,7 @@ static void FFMPEGThread(Context_t *context)
     int64_t seek_target_bytes = 0;
     bool do_seek_target_bytes = false;
     int64_t prev_seek_time_sec = -1;
-    void *stamp;
+    void *stamp = context->playback->stamp;
 
 #if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(56, 34, 100)
 #ifdef __sh__
@@ -2015,8 +2015,10 @@ static void FFMPEGThread(Context_t *context)
                     {
                         if (i == 1)
                         {
-                            prev_seek_time_sec = seek_target_seconds;
+                            prev_seek_time_sec = seek_from_start;
                         }
+                        /* the same time in every context, each from its own start */
+                        seek_target_seconds = seek_from_start;
                         if (avContextTab[i]->start_time != AV_NOPTS_VALUE)
                         {
                             seek_target_seconds += avContextTab[i]->start_time;
@@ -2134,6 +2136,10 @@ static void FFMPEGThread(Context_t *context)
                 {
                     if (multiContextLastPts[0] != INVALID_PTS_VALUE) {
                         int64_t target = av_rescale(multiContextLastPts[0], AV_TIME_BASE, 90000);
+                        if (avContextTab[1]->start_time != AV_NOPTS_VALUE)
+                        {
+                            target += avContextTab[1]->start_time;
+                        }
                         avformat_seek_file(avContextTab[1], -1, INT64_MIN, target, INT64_MAX, 0);
                         prev_seek_time_sec = -1;
                         wrapped_avcodec_flush_buffers(1);
@@ -2282,7 +2288,8 @@ static void FFMPEGThread(Context_t *context)
                     {
                         if (dts != INVALID_PTS_VALUE)
                         {
-                            if (dts > lastVideoDts)
+                            /* more than 10 s back: the source started anew */
+                            if (dts > lastVideoDts || dts + 900000 < lastVideoDts)
                             {
                                 lastVideoDts = dts;
                             }
@@ -2409,7 +2416,7 @@ static void FFMPEGThread(Context_t *context)
                 {
                     if (dts != INVALID_PTS_VALUE)
                     {
-                        if (dts > lastAudioDts)
+                        if (dts > lastAudioDts || dts + 900000 < lastAudioDts)
                         {
                             lastAudioDts = dts;
                         }
@@ -3009,6 +3016,11 @@ static void FFMPEGThread(Context_t *context)
                 }
                 else
                 {
+                    /* a dead live source fails at once, do not spin */
+                    if (context->playback->isTSLiveMode)
+                    {
+                        usleep(100000);
+                    }
                     continue;
                 }
             }
@@ -3574,7 +3586,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
 
     //ffmpeg5: error: assignment of member 'flags' in read-only object -> so commented out next line
     //avContextTab[AVIdx]->iformat->flags |= AVFMT_SEEK_TO_PTS;
-    avContextTab[AVIdx]->flags = AVFMT_FLAG_GENPTS;
+    avContextTab[AVIdx]->flags |= AVFMT_FLAG_GENPTS;
 
     if (context->playback->noprobe)
     {
@@ -3950,6 +3962,12 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
             {
             case AVMEDIA_TYPE_VIDEO:
                 ffmpeg_printf(10, "CODEC_TYPE_VIDEO %d\n", get_codecpar(stream)->codec_type);
+                /* a cover picture of an audio file: as video it stops the position */
+                if (stream->disposition & AV_DISPOSITION_ATTACHED_PIC)
+                {
+                    stream->discard = AVDISCARD_ALL;
+                    break;
+                }
                 // do not discard any stream from second context
                 stream->discard = 0 == cAVIdx ? AVDISCARD_ALL : AVDISCARD_DEFAULT; /* by default we discard all video streams */
                 if (encoding != NULL)
@@ -4998,7 +5016,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                     ffmpeg_printf(10, "Requesting video track\n");
                     context->manager->video->Command(context, MANAGER_GET_TRACK, &track);
 
-                    if( track )
+                    if( track && track->stream == stream )
                     {
                         ffmpeg_printf(10, "Old duration: %"PRId64"\n", track->duration);
 
@@ -5022,7 +5040,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                 {
                     context->manager->audio->Command(context, MANAGER_GET_TRACK, &track);
 
-                    if( track )
+                    if( track && track->stream == stream )
                     {
                         ffmpeg_printf(10, "Old duration: %"PRId64"\n", track->duration);
 
@@ -5046,7 +5064,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                 case AVMEDIA_TYPE_SUBTITLE:
                 {
                     context->manager->subtitle->Command(context, MANAGER_GET_TRACK, &track);
-                    if( track )
+                    if( track && track->stream == stream )
                     {
                         ffmpeg_printf(10, "Old duration: %"PRId64"\n", track->duration);
 

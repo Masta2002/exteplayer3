@@ -273,6 +273,8 @@ static int sps_transfer(const uint8_t *rbsp, size_t length)
         uint32_t index;
         if (count > 32)
             count = 32;
+        if (log2_poc > 12)
+            return 0;
         for (index = 0; index < count && !bit_reader_exhausted(&reader); ++index) {
             bit_reader_u(&reader, (int)log2_poc + 4);
             bit_reader_u(&reader, 1);

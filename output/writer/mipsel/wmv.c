@@ -166,13 +166,16 @@ static int writeData(void* _call)
         iov[0].iov_len += sizeof(Vc1FrameStartCode);
     }
 
+    int32_t written = call->WriteV(call->fd, iov, ic);
+
+    /* iov points into it until written */
     if(videocodecdata.data)
     {
         free(videocodecdata.data);
         videocodecdata.data = NULL;
     }
 
-    return call->WriteV(call->fd, iov, ic);
+    return written;
 }
 
 /* ***************************** */

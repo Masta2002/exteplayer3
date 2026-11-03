@@ -48,6 +48,8 @@ typedef struct
     struct SwsContext *p_swctx;
     const AVCodec  *p_codec;
     bool b_need_ephemer; /* Does the format need the ephemer flag (no end time set) */
+    int codec_id_open;
+    void *extradata_open;
 } decoder_sys_t;
 
 typedef struct
@@ -231,9 +233,17 @@ static int32_t Write(WriterSubCallData_t *subPacket)
     if (!subPacket)
         return -1;
 
+    /* another track: its codec or extradata (DVB composition page) */
+    if (g_sys && (g_sys->codec_id_open != subPacket->codecId || g_sys->extradata_open != subPacket->private_data))
+        Close();
+
     if (!g_sys)
+    {
         if (Open(subPacket->codecId, subPacket->private_data, subPacket->private_size))
             return -1;
+        g_sys->codec_id_open = subPacket->codecId;
+        g_sys->extradata_open = subPacket->private_data;
+    }
 
     AVSubtitle subtitle;
     memset(&subtitle, 0, sizeof(subtitle));

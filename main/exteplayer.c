@@ -760,7 +760,7 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             break;
         case 'U':
             printf("Software decoder will be used for OPUS codec\n");
-            vorbis_software_decoder_set(atoi(optarg));
+            opus_software_decoder_set(atoi(optarg));
             break;
         case '3':
             printf("Software decoder will be used for AC3 codec\n");
@@ -1384,7 +1384,7 @@ int main(int argc, char* argv[])
                         else if(!force && ergSec >= lengthInt)
                         {
                             sec = (lengthInt - CurrentSec) - 5;
-                            if(0 < sec)
+                            if(0 > sec)
                             {
                                 sec = 0; // no jump we are at the end
                             }

@@ -313,6 +313,45 @@ static char * json_string_escape(char *str)
     return tmp;
 }
 
+/* as json_string_escape, but the "\n" of ass_get_text stays a line break */
+static char * json_ass_escape(char *str)
+{
+    static char *tmp = NULL;
+    static size_t tmpSize = 0;
+    size_t need = 2 * strlen(str) + 1;
+    char *o;
+    if (need > tmpSize)
+    {
+        char *n = realloc(tmp, need);
+        if (!n)
+        {
+            return (char *)"";
+        }
+        tmp = n;
+        tmpSize = need;
+    }
+    o = tmp;
+    for (; *str; ++str)
+    {
+        if (*str == '\\' && str[1] == 'n')
+        {
+            *o++ = *str++;
+            *o++ = *str;
+        }
+        else if (*str == '"' || *str == '\\')
+        {
+            *o++ = '\\';
+            *o++ = *str;
+        }
+        else if ((unsigned char)*str >= 0x20)
+        {
+            *o++ = *str;
+        }
+    }
+    *o = '\0';
+    return tmp;
+}
+
 static char * remove_ass_formating(char *str)
 {
     char *out = str;
@@ -438,7 +477,7 @@ static int Write(void *_context, void *data)
             E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_string_escape( remove_ass_formating((char *)out->data) ));
         break;
         case SUBTITLE_CODEC_ID_ASS:
-            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, remove_ass_formating( ass_get_text((char *)out->data) ));
+            E2iSendMsg("{\"s_a\":{\"id\":%d,\"s\":%"PRId64",\"e\":%"PRId64",\"t\":\"%s\"}}\n", out->trackId, out->pts / 90, out->pts / 90 + out->durationMS, json_ass_escape( remove_ass_formating( ass_get_text((char *)out->data) ) ));
         break;
         case SUBTITLE_CODEC_ID_MOV_TEXT:
         {
@@ -476,9 +515,11 @@ static int Write(void *_context, void *data)
         break;
         default:
             subtitle_err("unknown encoding %s\n", Encoding);
+            free(Encoding);
             return  cERR_SUBTITLE_ERROR;
     }
 
+    free(Encoding);
     subtitle_printf(10, "<\n");
     return cERR_SUBTITLE_NO_ERROR;
 }

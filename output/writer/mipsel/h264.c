@@ -449,7 +449,11 @@ static int writeData(void* _call)
 
         if (private_data != call->private_data)
         {
-            avc3 = 1;
+            /* in-band parameter sets, but only when they were found */
+            if (CodecData != NULL)
+            {
+                avc3 = 1;
+            }
             free(private_data);
             private_data = NULL;
         }

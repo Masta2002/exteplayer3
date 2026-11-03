@@ -314,7 +314,8 @@ void OutputPacingWait(void *_context, int32_t stream, int64_t pts)
         paused = monotonic_us() - pauseStart;
         pthread_mutex_lock(&g_pacing_mtx);
         clk->wall_us += paused;
-        if (stream == PACING_STREAM_VIDEO && g_shared_wall_us >= 0)
+        /* one write waits out the pause, whichever stream it is */
+        if (g_shared_wall_us >= 0)
         {
             g_shared_wall_us += paused;
         }
