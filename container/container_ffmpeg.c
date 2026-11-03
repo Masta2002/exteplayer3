@@ -3547,6 +3547,13 @@ int SAM_ReadFunc(void *ptr, uint8_t *buffer, int lSize)
     CustomIOCtx_t *io = (CustomIOCtx_t *)ptr;
     int ret = 0;
 
+    /* EOF is sticky in stdio (glibc 2.28): a file that is still downloaded
+     * would never be read past the point reached first */
+    if (io->pFile)
+        clearerr(io->pFile);
+    if (io->pMoovFile)
+        clearerr(io->pMoovFile);
+
     if (!io->pMoovFile)
     {
         ret = (int)fread( (void *) buffer, (size_t) 1, (size_t) lSize, io->pFile );
