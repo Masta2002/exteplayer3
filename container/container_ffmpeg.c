@@ -4350,6 +4350,9 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
         {
             uint32_t n = 0;
             ffmpeg_printf(1, "cAVIdx[%d]: stream with multi programs: num of programs %d\n", cAVIdx, avContext->nb_programs);
+            /* a program with a probed picture first, else any with video */
+            int sizePass;
+            for (sizePass = 0; sizePass < 2; sizePass++)
             for (n = 0; n < avContext->nb_programs && (0 == nb_stream_indexes || stream_index == NULL); n++)
             {
                 AVProgram *p = avContext->programs[n];
@@ -4371,7 +4374,7 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                         for (m = 0; m < p->nb_stream_indexes; m++)
                         {
                             AVStream *s = avContext->streams[p->stream_index[m]];
-                            if (get_codecpar(s)->codec_type == AVMEDIA_TYPE_VIDEO && !(s->disposition & AV_DISPOSITION_ATTACHED_PIC) && video_has_writer(get_codecpar(s)))
+                            if (get_codecpar(s)->codec_type == AVMEDIA_TYPE_VIDEO && !(s->disposition & AV_DISPOSITION_ATTACHED_PIC) && video_has_writer(get_codecpar(s)) && (sizePass || get_codecpar(s)->width > 0))
                             {
                                 ffmpeg_printf(1, "cAVIdx[%d]: PROGRAM ID: %d, width [%d]\n", cAVIdx, (int32_t)p->id, (int32_t)get_codecpar(s)->width);
                                 stream_index = p->stream_index;
