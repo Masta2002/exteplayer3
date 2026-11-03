@@ -355,9 +355,19 @@ void OutputPacingWait(void *_context, int32_t stream, int64_t pts)
     }
 
     target = g_shared_wall_us + ((pts - g_shared_pts) * 1000LL) / 90LL;
+    ahead = target - now;
+    /* far ahead: the other stream jumped and moved the anchor, anchor here */
+    if (ahead > maxAhead + 2000000LL || ahead < -10000000LL)
+    {
+        g_shared_pts     = pts;
+        g_shared_wall_us = now;
+        clk->pts         = pts;
+        clk->wall_us     = now;
+        pthread_mutex_unlock(&g_pacing_mtx);
+        return;
+    }
     pthread_mutex_unlock(&g_pacing_mtx);
 
-    ahead = target - now;
     while (ahead > maxAhead)
     {
         int64_t sleep_us = ahead - maxAhead;

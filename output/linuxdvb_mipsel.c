@@ -149,8 +149,20 @@ int LinuxDvbEac3RestartState(void)
     struct timespec now;
     long elapsed;
 
+    if (1 == eac3Restart)
+    {
+        /* no DD+ packet for 5 s: no restart, and no 20 ms polling */
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        elapsed = (now.tv_sec - eac3PlayTime.tv_sec) * 1000 + (now.tv_nsec - eac3PlayTime.tv_nsec) / 1000000;
+        if (elapsed > 5000)
+        {
+            __sync_bool_compare_and_swap(&eac3Restart, 1, 0);
+            return 0;
+        }
+        return 1;
+    }
     if (2 != eac3Restart)
-        return eac3Restart ? 1 : 0;
+        return 0;
 
     clock_gettime(CLOCK_MONOTONIC, &now);
     elapsed = (now.tv_sec - eac3PlayTime.tv_sec) * 1000 + (now.tv_nsec - eac3PlayTime.tv_nsec) / 1000000;
@@ -687,10 +699,10 @@ int LinuxDvbClear(Context_t  *context, char *type)
                         {
                             ioctl(audiofd, AUDIO_SET_BYPASS_MODE, LinuxDvbMapBypassMode(writer->caps->dvbStreamType, false));
                         }
+                        /* may fail on a decoder that already plays, the clear itself worked */
                         if (ioctl(audiofd, AUDIO_PLAY) == -1)
                         {
                             linuxdvb_err("AUDIO_PLAY: ERROR %d, %s\n", errno, strerror(errno));
-                            ret = cERR_LINUXDVB_ERROR;
                         }
                         if (!context->playback->isPaused && ioctl(audiofd, AUDIO_CONTINUE) == -1)
                         {
@@ -1044,7 +1056,11 @@ static int Write(void  *_context, void *_out)
 
             if (res >= 0 && AUDIOTYPE_AC3_PLUS == writer->caps->dvbStreamType)
             {
-                __sync_bool_compare_and_swap(&eac3Restart, 1, 2);
+                /* the delay counts from the first DD+ packet */
+                if (__sync_bool_compare_and_swap(&eac3Restart, 1, 2))
+                {
+                    clock_gettime(CLOCK_MONOTONIC, &eac3PlayTime);
+                }
             }
 
             if (res < 0)
