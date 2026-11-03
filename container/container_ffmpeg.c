@@ -3501,6 +3501,16 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
          * connections of their segments and playlists */
         av_dict_set(&avio_opts, "rw_timeout", num, 0);
         av_dict_set(&avio_opts, "reconnect", "1", 0);
+        /* HLS: the playlist url need not end in .m3u8 (.txt, .css, no
+         * extension), and its segments can have any name: the content
+         * decides, as in GStreamer. Without a Range request (some CDNs answer
+         * it with 410), byte ranges of the playlist still get one. A broken
+         * segment is loaded again. Other demuxers leave these options. */
+        av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
+        av_dict_set(&avio_opts, "extension_picky",          "0", 0);
+        av_dict_set(&avio_opts, "http_seekable",            "0", 0);
+        av_dict_set(&avio_opts, "seg_max_retry",            "3", 0);
+
         if (context->playback->isTSLiveMode) // special mode for live TS stream with skip packet
         {
             av_dict_set(&avio_opts, "seekable", "0", 0);
@@ -3517,10 +3527,6 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             av_dict_set(&avio_opts, "max_reload",             "10", 0);
             av_dict_set(&avio_opts, "http_persistent",         "1", 0);
             av_dict_set(&avio_opts, "http_multiple",           "1", 0);
-            /* segments behind tracking redirects carry no file extension
-             * (FAST channels); the content decides, as in GStreamer */
-            av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
-            av_dict_set(&avio_opts, "extension_picky",          "0", 0);
         }
 
         if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
