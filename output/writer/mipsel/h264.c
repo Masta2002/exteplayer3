@@ -78,6 +78,23 @@ static int                     avc3 = 0;
 static int                     sps_pps_in_stream = 0;
 static uint8_t                *lastPrivateData = NULL;
 static uint32_t                lastPrivateSize = 0;
+
+/* DTS in the PES header, for B frames: untested on most decoders, so only
+ * with EP3_PES_DTS=1, and only for a sane DTS (before the PTS, less than 1 s) */
+static uint64_t PesDts(uint64_t pts, uint64_t dts)
+{
+    static int enabled = -1;
+    if (enabled < 0)
+    {
+        const char *env = getenv("EP3_PES_DTS");
+        enabled = env && env[0] == '1';
+    }
+    if (!enabled || pts == INVALID_PTS_VALUE || dts == INVALID_PTS_VALUE || dts >= pts || pts - dts > 90000)
+    {
+        return pts;
+    }
+    return dts;
+}
 /* ***************************** */
 /* Prototypes                    */
 /* ***************************** */
@@ -408,7 +425,7 @@ static int writeData(void* _call)
          * wrap. writev skips entries with iov_len=0. */
         iov[0].iov_len = 0;
 #else
-        iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, FakeStartCode);
+        iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, PesDts(VideoPts, call->Dts), FakeStartCode);
 #endif
 
         return call->WriteV(call->fd, iov, ic);
@@ -458,9 +475,17 @@ static int writeData(void* _call)
             private_data = NULL;
         }
 
-        /* a stream with its own SPS/PPS keeps them: re-cut TV recordings have
-         * other ones than avcC, and those break the picture */
-        if (!sps_pps_in_stream && NalLengthBytes >= 1 && NalLengthBytes <= 4)
+    }
+
+    /* The parameter sets of avcC go to the decoder with the first frame, so
+     * that a set found only there (a second PPS) is known; sets in the stream
+     * come after them and win. Without sets in the stream they go again with
+     * every IDR frame: a first frame dropped by the RAM buffer after a seek
+     * must not leave the decoder without them. */
+    if (!avc3 && CodecData != NULL)
+    {
+        uint8_t has_idr = 0;
+        if (NalLengthBytes >= 1 && NalLengthBytes <= 4)
         {
             uint32_t p = 0;
             while (p + NalLengthBytes < (uint32_t)call->len)
@@ -476,7 +501,10 @@ static int writeData(void* _call)
                 if (type == 7 || type == 8)
                 {
                     sps_pps_in_stream = 1;
-                    break;
+                }
+                else if (type == 5)
+                {
+                    has_idr = 1;
                 }
                 /* zero or corrupt NAL length */
                 if (nl == 0 || nl > (uint32_t)call->len - p - NalLengthBytes)
@@ -487,14 +515,11 @@ static int writeData(void* _call)
             }
         }
 
-        if (CodecData != NULL)
+        if (initialHeader || (has_idr && !sps_pps_in_stream))
         {
-            if (!sps_pps_in_stream)
-            {
-                iov[ic].iov_base  = CodecData;
-                iov[ic++].iov_len = CodecDataLen;
-                PacketLength     += CodecDataLen;
-            }
+            iov[ic].iov_base  = CodecData;
+            iov[ic++].iov_len = CodecDataLen;
+            PacketLength     += CodecDataLen;
             initialHeader = 0;
         }
     }
@@ -543,7 +568,7 @@ static int writeData(void* _call)
 #ifdef HAVE_DREAMNEXTGEN
         iov[0].iov_len = 0;
 #else
-        iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, call->Dts, 0);
+        iov[0].iov_len = InsertPesHeaderWithDts(PesHeader, -1, MPEG_VIDEO_PES_START_CODE, VideoPts, PesDts(VideoPts, call->Dts), 0);
 #endif
 
         len = call->WriteV(call->fd, iov, ic);
