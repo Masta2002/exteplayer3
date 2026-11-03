@@ -4069,6 +4069,22 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             av_dict_set(&avio_opts, "max_reload",             "10", 0);
             av_dict_set(&avio_opts, "http_persistent",         "1", 0);
             av_dict_set(&avio_opts, "http_multiple",           "1", 0);
+
+            /* large live playlists come much smaller with gzip; FFmpeg asks
+             * for it only when told (OE-A builds it with zlib) */
+            AVDictionaryEntry *hdr = av_dict_get(avio_opts, "headers", NULL, 0);
+            if (!hdr || !hdr->value || !av_stristr(hdr->value, "Accept-Encoding:"))
+            {
+                if (hdr && hdr->value && hdr->value[0])
+                {
+                    size_t hlen = strlen(hdr->value);
+                    if (hlen < 2 || hdr->value[hlen - 2] != '\r' || hdr->value[hlen - 1] != '\n')
+                    {
+                        av_dict_set(&avio_opts, "headers", "\r\n", AV_DICT_APPEND);
+                    }
+                }
+                av_dict_set(&avio_opts, "headers", "Accept-Encoding: gzip\r\n", AV_DICT_APPEND);
+            }
         }
 
         if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
