@@ -135,17 +135,28 @@ static char *mov_get_text(const char *str, int len)
     const char *p_str = str;
     const char *end = str + len;
 
-    while (p_str < end && !((unsigned char)*p_str & 0x80) && *p_str != ' ')
+    /* a tx3g sample starts with the 16 bit length of its text */
+    if (len >= 2 && (((unsigned char)str[0] << 8) | (unsigned char)str[1]) <= len - 2)
     {
-        p_str++;
+        p_str = str + 2;
+        len = ((unsigned char)str[0] << 8) | (unsigned char)str[1];
+    }
+    else
+    {
+        while (p_str < end && !((unsigned char)*p_str & 0x80) && *p_str != ' ')
+        {
+            p_str++;
+        }
+        len = end - p_str;
     }
 
-    if (p_str >= end)
+    if (len <= 0)
     {
         return strdup("");
     }
 
-    char *result = malloc(len + 1);
+    /* escapes make two bytes of one */
+    char *result = malloc(2 * len + 1);
 
     if (!result)
     {
@@ -243,7 +254,20 @@ static char *mov_get_text(const char *str, int len)
 
 static char * json_string_escape(char *str)
 {
-    static char tmp[2048];
+    /* every character can become two */
+    static char *tmp = NULL;
+    static size_t tmpSize = 0;
+    size_t need = 2 * strlen(str) + 1;
+    if (need > tmpSize)
+    {
+        char *n = realloc(tmp, need);
+        if (!n)
+        {
+            return (char *)"";
+        }
+        tmp = n;
+        tmpSize = need;
+    }
     char *ptr1 = tmp;
     char *ptr2 = str;
     while (*ptr2 != '\0')
@@ -375,8 +399,8 @@ static int Write(void *_context, void *data)
     {
         if (g_subWriter)
         {
-            g_subWriter = NULL;
             g_subWriter->close();
+            g_subWriter = NULL;
         }
 
         Flush();

@@ -206,6 +206,8 @@ static void LinuxDvbBuffThread(Context_t *context)
     }
 
     pthread_mutex_lock(&bufferingMtx);
+    g_bDuringWrite = false;
+    pthread_cond_signal(&bufferingWriteFinishedCond);
     pthread_cond_signal(&bufferingExitCond);
     pthread_mutex_unlock(&bufferingMtx);
 
@@ -244,6 +246,14 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
 
         g_pDVBMtx = mtx;
 
+        /* init synchronization prymitives, before the thread waits on them */
+        pthread_mutex_init(&bufferingMtx, NULL);
+
+        pthread_cond_init(&bufferingExitCond, NULL);
+        pthread_cond_init(&bufferingDataConsumedCond, NULL);
+        pthread_cond_init(&bufferingWriteFinishedCond, NULL);
+        pthread_cond_init(&bufferingdDataAddedCond, NULL);
+
         if((error = pthread_create(&bufferingThread, &attr, (void *)&LinuxDvbBuffThread, context)) != 0)
         {
             buff_printf(10, "Creating thread, error:%d:%s\n", error, strerror(error));
@@ -255,14 +265,6 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         {
             buff_printf(10, "Created thread\n");
             hasBufferingThreadStarted = true;
-
-            /* init synchronization prymitives */
-            pthread_mutex_init(&bufferingMtx, NULL);
-
-            pthread_cond_init(&bufferingExitCond, NULL);
-            pthread_cond_init(&bufferingDataConsumedCond, NULL);
-            pthread_cond_init(&bufferingWriteFinishedCond, NULL);
-            pthread_cond_init(&bufferingdDataAddedCond, NULL);
         }
     }
 
@@ -439,7 +441,7 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
     pthread_mutex_lock(&bufferingMtx);
     while (0 == PlaybackDieNow(0))
     {
-        if (bufferingDataSize + chunkSize >= maxBufferingDataSize)
+        if (bufferingQueueHead != NULL && bufferingDataSize + chunkSize >= maxBufferingDataSize)
         {
             /* Buffering queue is full we need wait for space*/
             pthread_cond_wait(&bufferingDataConsumedCond, &bufferingMtx);

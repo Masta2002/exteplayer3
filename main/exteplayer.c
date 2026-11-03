@@ -156,6 +156,42 @@ void E2iSendMsg(const char *format, ...)
     va_end(args);
 }
 
+/* a string for a JSON value: escaped and cut to fit, for metadata of the
+ * stream (track names) and urls. Four buffers, for one message. */
+static const char *JsonEsc(const char *s)
+{
+    static char ring[4][1024];
+    static int slot = 0;
+    char *out = ring[slot];
+    size_t o = 0;
+
+    slot = (slot + 1) % 4;
+    if (!s)
+    {
+        out[0] = '\0';
+        return out;
+    }
+    for (; *s && o + 7 < sizeof(ring[0]); ++s)
+    {
+        unsigned char c = (unsigned char)*s;
+        if (c == '"' || c == '\\')
+        {
+            out[o++] = '\\';
+            out[o++] = (char)c;
+        }
+        else if (c < 0x20)
+        {
+            o += snprintf(out + o, sizeof(ring[0]) - o, "\\u%04x", c);
+        }
+        else
+        {
+            out[o++] = (char)c;
+        }
+    }
+    out[o] = '\0';
+    return out;
+}
+
 void E2iStartMsg(void)
 {
     flockfile(stderr);
@@ -330,11 +366,18 @@ static char *map_inter_file_path(const char *filename)
             if((param[idx] == '\0') || (param[idx] == '\n') || (param[idx] == '&'))
                 end = idx;
 
+            /* an '&' before the '=' of this parameter */
+            if(start != -1 && end != -1 && end <= start)
+                end = -1;
+
             if(start != -1 && end != -1)
             {
                 char str[1000];
-                strncpy(str, param+start, end-start);
-                str[end-start] = '\0';
+                int slen = end - start;
+                if (slen >= (int)sizeof(str))
+                    slen = sizeof(str) - 1;
+                strncpy(str, param+start, slen);
+                str[slen] = '\0';
 
                 switch(str[0])
                 {
@@ -529,15 +572,15 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
 
 						if ('a' == argvBuff[0])
 							{
-								sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name, TrackList[i].channels, TrackList[i].Description ? TrackList[i].Description : "");
+								snprintf( tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}", TrackList[i].Id , JsonEsc(TrackList[i].Encoding), JsonEsc(TrackList[i].Name), TrackList[i].channels, JsonEsc(TrackList[i].Description ? TrackList[i].Description : ""));
 								free(TrackList[i].Description);
 							}
 						else
 							{
 								if ('s' == argvBuff[0])
-									sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name, TrackList[i].is_forced);
+									snprintf( tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}", TrackList[i].Id , JsonEsc(TrackList[i].Encoding), JsonEsc(TrackList[i].Name), TrackList[i].is_forced);
 								else
-									sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
+									snprintf( tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , JsonEsc(TrackList[i].Encoding), JsonEsc(TrackList[i].Name));
 							}
 						strbuffer_add( ptrManager->tracks_cache, tmp_str );
 
@@ -574,18 +617,18 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
             {
                 if ('a' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name, track->channels, track->Description ? track->Description : "");
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , JsonEsc(track->Encoding), JsonEsc(track->Name), track->channels, JsonEsc(track->Description ? track->Description : ""));
                     free(track->Description);
                 }
                 else if ('s' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name, track->is_forced);
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}}\n", argvBuff[0], argvBuff[1], track->Id , JsonEsc(track->Encoding), JsonEsc(track->Name), track->is_forced);
                 }
                 else // video
                 {
                     char msg[512];
                     snprintf(msg, sizeof(msg), "{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"w\":%d,\"h\":%d,\"f\":%u,\"p\":%d,\"an\":%d,\"ad\":%d,\"hdr\":%d}}\n", \
-                    argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name, track->width, track->height, track->frame_rate, track->progressive, track->aspect_ratio_num, track->aspect_ratio_den, container_ffmpeg_get_hevc_hdr_type());
+                    argvBuff[0], argvBuff[1], track->Id , JsonEsc(track->Encoding), JsonEsc(track->Name), track->width, track->height, track->frame_rate, track->progressive, track->aspect_ratio_num, track->aspect_ratio_den, container_ffmpeg_get_hevc_hdr_type());
                     E2iSendMsg("%s", msg);
                     SendExternalVideo(msg);
                 }
@@ -883,7 +926,15 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
     if (0 == ret && optind < argc)
     {
         playbackFiles->szFirstFile = map_inter_file_path(argv[optind]);
-        printf("file: [%s]\n", playbackFiles->szFirstFile);
+        if (NULL == playbackFiles->szFirstFile)
+        {
+            printf("file: [%s] not readable\n", argv[optind]);
+            ret = -1;
+        }
+        else
+        {
+            printf("file: [%s]\n", playbackFiles->szFirstFile);
+        }
         ++optind;
     }
     else
@@ -1132,7 +1183,7 @@ int main(int argc, char* argv[])
     	commandRetVal = params.ret;
     }
 
-    E2iSendMsg("{\"PLAYBACK_OPEN\":{\"OutputName\":\"%s\", \"file\":\"%s\", \"sts\":%d}}\n", g_player->output->Name, playbackFiles.szFirstFile, commandRetVal);
+    E2iSendMsg("{\"PLAYBACK_OPEN\":{\"OutputName\":\"%s\", \"file\":\"%s\", \"sts\":%d}}\n", g_player->output->Name, JsonEsc(playbackFiles.szFirstFile), commandRetVal);
     if(commandRetVal < 0)
     {
         if(NULL != g_player)

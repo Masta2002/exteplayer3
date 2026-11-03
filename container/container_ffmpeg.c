@@ -334,6 +334,11 @@ static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_
 }
 
 
+/* input of the software audio resampler */
+static int32_t swr_in_channels = 0;
+static int32_t swr_in_rate = 0;
+static int32_t swr_in_format = -1;
+
 /* the demuxer returned a real EOF, not only an error */
 static uint8_t readEofReached = 0;
 
@@ -2612,8 +2617,24 @@ static void FFMPEGThread(Context_t *context)
                         }
 
                         int32_t e = 0;
+#if HAVE_CH_LAYOUT
+                        const int32_t frame_channels = decoded_frame->ch_layout.nb_channels;
+#else
+                        const int32_t frame_channels = decoded_frame->channels;
+#endif
+                        /* the resampler was set up for the first frame: a stream
+                         * that changes from 5.1 to stereo or its rate needs a new one */
+                        if (swr && (frame_channels != swr_in_channels || decoded_frame->sample_rate != swr_in_rate || decoded_frame->format != swr_in_format))
+                        {
+                            ffmpeg_printf(10, "audio input changed, new resampler\n");
+                            swr_free(&swr);
+                            swr = NULL;
+                        }
                         if (!swr)
                         {
+                            swr_in_channels = frame_channels;
+                            swr_in_rate = decoded_frame->sample_rate;
+                            swr_in_format = decoded_frame->format;
                             if(insert_pcm_as_lpcm)
                             {
                                 out_sample_rate = 48000;
@@ -2631,6 +2652,10 @@ static void FFMPEGThread(Context_t *context)
                             }
 
                             swr = swr_alloc();
+                            if (!swr)
+                            {
+                                break;
+                            }
 #if HAVE_CH_LAYOUT
                             out_channels = c->ch_layout.nb_channels;
                             if( !av_channel_layout_check(&c->ch_layout) )
@@ -2730,8 +2755,8 @@ static void FFMPEGThread(Context_t *context)
 #if HAVE_CH_LAYOUT
                                 char icl[128];
                                 char ocl[128];
-                                av_channel_layout_describe(&c->ch_layout, icl, sizeof(icl-1));
-                                av_channel_layout_describe(&out_channel_layout, ocl, sizeof(ocl-1));
+                                av_channel_layout_describe(&c->ch_layout, icl, sizeof(icl));
+                                av_channel_layout_describe(&out_channel_layout, ocl, sizeof(ocl));
                                 ffmpeg_err("swr_init: %d (icl=%s ocl=%s isr=%d osr=%d isf=%d osf=%d\n",
                                     -e, icl, ocl, c->sample_rate, out_sample_rate, c->sample_fmt, AV_SAMPLE_FMT_S16);
 #else
@@ -2740,6 +2765,8 @@ static void FFMPEGThread(Context_t *context)
 #endif
                                 swr_free(&swr);
                                 swr = NULL;
+                                restart_audio_resampling = 1;
+                                break;
                             }
                         }
 
@@ -2766,6 +2793,12 @@ static void FFMPEGThread(Context_t *context)
                          * has 8 slots which would overflow for 7.1.4 (12 channels). */
                         out_samples = swr_convert(swr, &output[0], out_samples,
                                                   (const uint8_t **) decoded_frame->extended_data, in_samples);
+                        if (out_samples < 0)
+                        {
+                            ffmpeg_err("swr_convert: %d\n", out_samples);
+                            av_freep(&output[0]);
+                            continue;
+                        }
 
                         //////////////////////////////////////////////////////////////////////
                         // Update pcmExtradata according to decode parameters
