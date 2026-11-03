@@ -339,6 +339,10 @@ static int32_t swr_in_channels = 0;
 static int32_t swr_in_rate = 0;
 static int32_t swr_in_format = -1;
 
+/* when the current av_read_frame started, 0 outside of it */
+static volatile int64_t readStartUs = 0;
+static int64_t readStallLimitUs = 60000000;
+
 /* the demuxer returned a real EOF, not only an error */
 static uint8_t readEofReached = 0;
 
@@ -2179,7 +2183,9 @@ static void FFMPEGThread(Context_t *context)
 
         if( !isWaitingForFinish )
         {
+            readStartUs = av_gettime_relative();
             ffmpegStatus = av_read_frame(avContextTab[cAVIdx], &packet);
+            readStartUs = 0;
         }
 
         if (!isWaitingForFinish && (ffmpegStatus == 0) )
@@ -3064,6 +3070,13 @@ static int32_t terminating = 0;
 static int32_t interrupt_cb(void *ctx)
 {
     PlaybackHandler_t *p = (PlaybackHandler_t *)ctx;
+    /* The timeouts reach the playlist connection, not the HLS/DASH segments:
+     * a server that stops sending would block the read for ever. */
+    int64_t start = readStartUs;
+    if (start > 0 && av_gettime_relative() - start > readStallLimitUs)
+    {
+        return 1;
+    }
     return p->abortRequested || PlaybackDieNow(0);
 }
 
@@ -3500,6 +3513,12 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     	char num[16];
 
     	sprintf( num, "%u000", context->playback->httpTimeout );
+        /* a read without data for 3x the timeout, at least 60 s, ends */
+        readStallLimitUs = (int64_t)context->playback->httpTimeout * 3000; /* ms */
+        if (readStallLimitUs < 60000000)
+        {
+            readStallLimitUs = 60000000;
+        }
         av_dict_set(&avio_opts, "timeout", num, 0); // default is 10s
         /* the HLS and DASH demuxers pass rw_timeout, not timeout, on to the
          * connections of their segments and playlists */
