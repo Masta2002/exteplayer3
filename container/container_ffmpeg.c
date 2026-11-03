@@ -3162,7 +3162,7 @@ int64_t SAM_SeekFunc(void *ptr, int64_t pos, int whence)
                 ret = pos;
                 break;
             case SEEK_CUR:
-                ret += pos;
+                ret = io->iOffset + pos;
                 break;
             case SEEK_END:
                 ret = io->iFileSize + pos;
@@ -3548,17 +3548,15 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     pavio_opts = &avio_opts;
 
     /* Cap the probe for local files; avformat_open_input ignores the
-     * matching av_dict keys, so pre-allocate the context and set them
-     * directly. Network URIs keep the defaults. */
+     * matching av_dict keys, so set them on the context. It already holds
+     * the custom IO (moov atom file) and the interrupt callback, a new one
+     * would lose both. Network URIs keep the defaults. */
     {
         const int is_local = (strstr(filename, "://") == NULL)
                           || (strncmp(filename, "file://", 7) == 0);
-        if (is_local) {
-            avContextTab[AVIdx] = avformat_alloc_context();
-            if (avContextTab[AVIdx]) {
-                avContextTab[AVIdx]->probesize            = 10000000;
-                avContextTab[AVIdx]->max_analyze_duration =  3000000;
-            }
+        if (is_local && avContextTab[AVIdx]) {
+            avContextTab[AVIdx]->probesize            = 10000000;
+            avContextTab[AVIdx]->max_analyze_duration =  3000000;
         }
     }
 
