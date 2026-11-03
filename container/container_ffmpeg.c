@@ -1767,6 +1767,10 @@ static void *ls_thread(void *arg)
     int64_t t0 = ls_now_ms();
     int64_t maxgap = 0;
     int64_t need = -1;
+    /* margin on top of the measured gap; the watch resyncs later when it was
+     * not enough, so zapping stays fast. EP3_LIVE_SYNC_MARGIN=ms */
+    const char *menv = getenv("EP3_LIVE_SYNC_MARGIN");
+    int64_t margin = menv ? atoi(menv) : 400;
 
     while (ls_state == 1 && context->playback && context->playback->isPlaying)
     {
@@ -1779,17 +1783,17 @@ static void *ls_thread(void *arg)
             {
                 maxgap = gap;
             }
-            need = maxgap > 200 ? maxgap + 800 : 0;
-            if (need > 5000)
+            need = maxgap > 200 ? maxgap + margin : 0;
+            if (need > 3000)
             {
-                need = 5000;
+                need = 3000;
             }
         }
         else if (el >= 2000)
         {
             need = 0;                     /* no audio seen: do not hold the video */
         }
-        if ((need >= 0 && el >= need) || el >= 6000)
+        if ((need >= 0 && el >= need) || el >= 3500)
         {
             break;
         }
