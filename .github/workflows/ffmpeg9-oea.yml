@@ -39,7 +39,7 @@ jobs:
       run: |
         cd ffsrc
         ./configure --prefix=$HOME/ffmpeg --enable-shared --disable-static --disable-doc \
-          --enable-gpl --enable-libxml2 --enable-openssl --enable-libx264 --enable-zlib \
+          --enable-gpl --enable-version3 --enable-libxml2 --enable-openssl --enable-libx264 --enable-zlib \
           --extra-cflags="-Werror=implicit-function-declaration -Werror=incompatible-pointer-types -Werror=int-conversion"
         make -j$(nproc) install
 
