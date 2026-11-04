@@ -27,7 +27,7 @@ jobs:
     - name: Patch FFmpeg 9.0.2
       run: |
         mkdir ffsrc && cd ffsrc
-        curl -sL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz -o ff.tar.xz
+        curl -sL --retry 5 --retry-all-errors https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.0.2.tar.gz -o ff.tar.xz
         tar -xf ff.tar.xz --strip-components=1
         while read -r p; do
           case "$p" in ''|'#'*) continue;; esac
