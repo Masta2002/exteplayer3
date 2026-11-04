@@ -16,6 +16,8 @@ SRCREV = "${AUTOREV}"
 PV = "186+git"
 PKGV = "186+git${GITPKGV}"
 
+SRC_URI:openbh = "git://github.com/BlackHole/exteplayer3.git;branch=master;protocol=https"
+SRC_URI:openvix = "git://github.com/OpenViX/exteplayer3.git;branch=master;protocol=https"
 SRC_URI = "git://github.com/oe-alliance/exteplayer3.git;branch=master;protocol=https"
 
 S = "${WORKDIR}/git"

@@ -86,6 +86,7 @@ oe-alliance-core against `ffmpeg-ext` (FFmpeg 6.1 with the playback fixes of
 -w          WMA2, WMA/PRO software decoding
 -l          software decoder uses LPCM for injection (otherwise WAV PCM)
 -s          software decoding as stereo (downmix)
+-r          software decoding without PCM resampling
 -4 0|1      disable/enable the flv2mpeg4 converter
 -C          disable the tracks info cache
 -T          http timeout
@@ -101,7 +102,12 @@ oe-alliance-core against `ffmpeg-ext` (FFmpeg 6.1 with the playback fixes of
 -h headers  custom HTTP headers "Name: value\r\nName: value\r\n"
 -u agent    custom HTTP User-Agent
 -x uri      separate audio uri
--5 key      MPEG-DASH CENC decryption key
+-c cookies  HTTP cookies (use -h instead)
+-0 idx      MPEG-DASH video representation index
+-1 idx      MPEG-DASH audio representation index
+-5 key      MPEG-DASH CENC decryption key, all streams
+-6 key      MPEG-DASH CENC decryption key of the video stream
+-7 key      MPEG-DASH CENC decryption key of the audio stream
 -f opt=val  any other FFmpeg option
 -F path     file with the moov atom (MP4 in progressive download mode)
 -O offset   moov atom offset in the original file

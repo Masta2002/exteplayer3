@@ -163,7 +163,7 @@ void E2iSendMsg(const char *format, ...)
 static const char *JsonEsc(const char *s)
 {
     /* track messages come from the command and the FFmpeg thread */
-    static __thread char ring[4][1024];
+    static __thread char ring[4][4096]; /* urls with tokens get long */
     static __thread int slot = 0;
     char *out = ring[slot];
     size_t o = 0;

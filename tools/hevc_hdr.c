@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HEVC_HDR_MAX_ES_BYTES  (8U * 1024U * 1024U)
+#define HEVC_HDR_MAX_ES_BYTES  (2U * 1024U * 1024U)
 #define HEVC_HDR_CLASSIFY_STEP (64U * 1024U)
 #define HEVC_HDR_SDR_COMMIT    (768U * 1024U)
 #define HEVC_HDR_INITIAL_CAP   (512U * 1024U)
@@ -488,8 +488,11 @@ static int detector_evaluate(HevcHdrDetector *detector, int force)
         detector->size - detector->last_classify < HEVC_HDR_CLASSIFY_STEP)
         return 0;
 
+    /* only the bytes added since the last pass: the earlier ones were SDR so
+     * far, and every append is whole NAL units, so this is a NAL boundary */
+    result = hevc_hdr_classify(detector->buffer + detector->last_classify,
+                               detector->size - detector->last_classify, &saw_sps);
     detector->last_classify = detector->size;
-    result = hevc_hdr_classify(detector->buffer, detector->size, &saw_sps);
     if (result != HEVC_HDR_SDR) {
         detector->result = result;
         detector->done = 1;

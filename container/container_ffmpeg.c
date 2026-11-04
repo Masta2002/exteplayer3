@@ -1740,6 +1740,22 @@ static void updateHevcHdr(Context_t *context, Track_t *track,
 #endif
 }
 
+/* FFmpeg inflates gzip only when built with zlib: autodetected, unless the
+ * build switched it or the autodetection off */
+static int ffmpeg_has_zlib(void)
+{
+    const char *cfg = avformat_configuration();
+    if (!cfg)
+    {
+        return 0;
+    }
+    if (strstr(cfg, "--enable-zlib"))
+    {
+        return 1;
+    }
+    return !strstr(cfg, "--disable-zlib") && !strstr(cfg, "--disable-autodetect");
+}
+
 #ifndef HAVE_DREAMNEXTGEN
 /* In live TS the audio can trail the video by more than 1 s and a Dreambox drops
  * it as late, for the rest of the channel. So the output is held at the start
@@ -1747,8 +1763,27 @@ static void updateHevcHdr(Context_t *context, Track_t *track,
  * EP3_LIVE_SYNC=0 and EP3_LIVE_SYNC_WATCH=0 switch this off. */
 #include <time.h>
 static volatile int     ls_state  = 0;   /* 0 not started, 1 holding, 2 done/off */
-static volatile int64_t ls_last_v = INVALID_PTS_VALUE;
-static volatile int64_t ls_last_a = INVALID_PTS_VALUE;
+/* 64-bit values written by the FFmpeg thread and read by the hold thread: a
+ * mutex, a 32-bit CPU would tear them */
+static pthread_mutex_t  ls_mutex  = PTHREAD_MUTEX_INITIALIZER;
+static int64_t          ls_last_v = INVALID_PTS_VALUE;
+static int64_t          ls_last_a = INVALID_PTS_VALUE;
+
+static void ls_set(int64_t *var, int64_t value)
+{
+    pthread_mutex_lock(&ls_mutex);
+    *var = value;
+    pthread_mutex_unlock(&ls_mutex);
+}
+
+static int64_t ls_get(int64_t *var)
+{
+    int64_t value;
+    pthread_mutex_lock(&ls_mutex);
+    value = *var;
+    pthread_mutex_unlock(&ls_mutex);
+    return value;
+}
 
 static int64_t ls_now_ms(void)
 {
@@ -1775,7 +1810,7 @@ static void ls_watch(Context_t *context)
         int64_t t1;
 
         usleep(250000);
-        if (context->playback->isPaused || ls_last_a == INVALID_PTS_VALUE)
+        if (context->playback->isPaused || ls_get(&ls_last_a) == INVALID_PTS_VALUE)
         {
             low = 0;
             continue;
@@ -1784,7 +1819,7 @@ static void ls_watch(Context_t *context)
         {
             continue;
         }
-        d = ((int64_t)ls_last_a - (int64_t)cur) & 0x1FFFFFFFFLL;
+        d = (ls_get(&ls_last_a) - (int64_t)cur) & 0x1FFFFFFFFLL;
         if (d >= 0x100000000LL)
         {
             d -= 0x200000000LL;
@@ -1806,7 +1841,7 @@ static void ls_watch(Context_t *context)
         while (context->playback && context->playback->isPlaying && !context->playback->isPaused &&
                ls_now_ms() - t1 < 3000)
         {
-            int64_t dd = ((int64_t)ls_last_a - (int64_t)cur) & 0x1FFFFFFFFLL;
+            int64_t dd = (ls_get(&ls_last_a) - (int64_t)cur) & 0x1FFFFFFFFLL;
             if (dd >= 0x100000000LL)
             {
                 dd -= 0x200000000LL;
@@ -1842,10 +1877,12 @@ static void *ls_thread(void *arg)
     while (ls_state == 1 && context->playback && context->playback->isPlaying)
     {
         int64_t el = ls_now_ms() - t0;
+        int64_t last_v = ls_get(&ls_last_v);
+        int64_t last_a = ls_get(&ls_last_a);
         need = -1;
-        if (ls_last_v != INVALID_PTS_VALUE && ls_last_a != INVALID_PTS_VALUE)
+        if (last_v != INVALID_PTS_VALUE && last_a != INVALID_PTS_VALUE)
         {
-            int64_t gap = (ls_last_v - ls_last_a) / 90;
+            int64_t gap = (last_v - last_a) / 90;
             if (gap > maxgap)
             {
                 maxgap = gap;
@@ -1888,14 +1925,17 @@ static void ls_on_video(Context_t *context, int64_t pts)
 
     if (pts != INVALID_PTS_VALUE)
     {
-        ls_last_v = pts;
+        ls_set(&ls_last_v, pts);
     }
     if (ls_state != 0)
     {
         return;
     }
+    /* live TS only (-v), as the fork it comes from used it; other live
+     * streams keep the normal start */
     env = getenv("EP3_LIVE_SYNC");
-    if (STB_DREAMBOX != GetSTBType() || (env && env[0] == '0') || !avContextTab[0] ||
+    if (STB_DREAMBOX != GetSTBType() || !context->playback || !context->playback->isTSLiveMode ||
+        (env && env[0] == '0') || !avContextTab[0] ||
         (avContextTab[0]->duration != AV_NOPTS_VALUE && avContextTab[0]->duration > 0))
     {
         ls_state = 2;
@@ -2908,7 +2948,7 @@ static void FFMPEGThread(Context_t *context)
 #ifndef HAVE_DREAMNEXTGEN
                 if (currentAudioPts != INVALID_PTS_VALUE)
                 {
-                    ls_last_a = currentAudioPts;
+                    ls_set(&ls_last_a, currentAudioPts);
                 }
 #endif
                 dts = calcPts(cAVIdx, audioTrack->stream, packet.dts);
@@ -4048,14 +4088,18 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
          * connections of their segments and playlists */
         av_dict_set(&avio_opts, "rw_timeout", num, 0);
         av_dict_set(&avio_opts, "reconnect", "1", 0);
+        /* the User-Agent exteplayer3 always sent with ffmpeg-ext; the system
+         * FFmpeg keeps its own default for everything else */
+        if (!av_dict_get(avio_opts, "user_agent", NULL, 0))
+        {
+            av_dict_set(&avio_opts, "user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36", 0);
+        }
         /* HLS: the playlist url need not end in .m3u8 (.txt, .css, no
          * extension), and its segments can have any name: the content
-         * decides, as in GStreamer. Without a Range request (some CDNs answer
-         * it with 410), byte ranges of the playlist still get one. A broken
-         * segment is loaded again. Other demuxers leave these options. */
+         * decides, as in GStreamer. A broken segment is loaded again. Other
+         * demuxers leave these options. */
         av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
         av_dict_set(&avio_opts, "extension_picky",          "0", 0);
-        av_dict_set(&avio_opts, "http_seekable",            "0", 0);
         av_dict_set(&avio_opts, "seg_max_retry",            "3", 0);
 
         if (context->playback->isTSLiveMode) // special mode for live TS stream with skip packet
@@ -4076,9 +4120,9 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             av_dict_set(&avio_opts, "http_multiple",           "1", 0);
 
             /* large live playlists come much smaller with gzip; FFmpeg asks
-             * for it only when told (OE-A builds it with zlib) */
+             * for it only when told, and inflates only when built with zlib */
             AVDictionaryEntry *hdr = av_dict_get(avio_opts, "headers", NULL, 0);
-            if (!hdr || !hdr->value || !av_stristr(hdr->value, "Accept-Encoding:"))
+            if (ffmpeg_has_zlib() && (!hdr || !hdr->value || !av_stristr(hdr->value, "Accept-Encoding:")))
             {
                 if (hdr && hdr->value && hdr->value[0])
                 {
@@ -5484,7 +5528,8 @@ static int32_t container_ffmpeg_switch_subtitle(Context_t *context, int32_t *arg
 
     /* The HLS demuxer of FFmpeg 9 does not load a subtitle playlist while
      * its stream is discarded, and starts them so: the chosen track has to
-     * be read. Other demuxers read subtitle streams anyway. */
+     * be read, the others not (a track read once would keep loading its
+     * segments). Other demuxers just skip discarded subtitle packets. */
     getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
     if (avContextTab[0])
     {
@@ -5492,9 +5537,9 @@ static int32_t container_ffmpeg_switch_subtitle(Context_t *context, int32_t *arg
         for (n = 0; n < avContextTab[0]->nb_streams; n++)
         {
             AVStream *stream = avContextTab[0]->streams[n];
-            if (get_codecpar(stream)->codec_type == AVMEDIA_TYPE_SUBTITLE && stream->id == *arg)
+            if (get_codecpar(stream)->codec_type == AVMEDIA_TYPE_SUBTITLE)
             {
-                stream->discard = AVDISCARD_DEFAULT;
+                stream->discard = stream->id == *arg ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
             }
         }
     }
