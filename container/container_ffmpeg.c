@@ -5482,6 +5482,24 @@ static int32_t container_ffmpeg_switch_subtitle(Context_t *context, int32_t *arg
 {
     ffmpeg_printf(10, "track %d\n", *arg);
 
+    /* The HLS demuxer of FFmpeg 9 does not load a subtitle playlist while
+     * its stream is discarded, and starts them so: the chosen track has to
+     * be read. Other demuxers read subtitle streams anyway. */
+    getMutex_wr(__FILE__, __FUNCTION__,__LINE__);
+    if (avContextTab[0])
+    {
+        uint32_t n;
+        for (n = 0; n < avContextTab[0]->nb_streams; n++)
+        {
+            AVStream *stream = avContextTab[0]->streams[n];
+            if (get_codecpar(stream)->codec_type == AVMEDIA_TYPE_SUBTITLE && stream->id == *arg)
+            {
+                stream->discard = AVDISCARD_DEFAULT;
+            }
+        }
+    }
+    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+
     /* This is made to flush inside the buffer because
      * subtitles frame was already read and ignored
      * we seek to force ffmpeg to read once again the same data
