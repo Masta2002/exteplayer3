@@ -5,6 +5,12 @@ Subject: [PATCH 45/49] subtitles: fixed subtitle search after seek
 
 Ported to FFmpeg 9.0.2 from 0020-subtitles-fixed-subtitle-search-after-seek.patch.
 Applied unchanged (offset only).
+Note: ff_subtitles_queue_seek() is shared, so this is a global change
+for every subtitle demuxer (srt, webvtt, ass, ...), not only for HLS/DASH
+subtitles. It fixes the cue selection after a seek: the forward and
+backward searches stop at the first cue inside [min_ts, max_ts] of the
+requested stream instead of running past it, so a seek no longer picks
+a cue outside the range (ERANGE, no subtitles until the next cue).
 ---
  libavformat/subtitles.c | 19 +++++++++++++++++--
  1 file changed, 17 insertions(+), 2 deletions(-)

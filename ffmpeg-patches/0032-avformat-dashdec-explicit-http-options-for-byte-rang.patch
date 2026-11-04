@@ -19,10 +19,10 @@ branch. Subtitles keep skyjet18's seekable=0.
  1 file changed, 4 insertions(+), 2 deletions(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 4ed14819..dfaa553f 100644
+index efbc300b..8e0e7b17 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -1953,9 +1953,11 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+@@ -1964,9 +1964,11 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
          /* disable seeking for subtitles - subtitles are small and many servers doesn't support byterange for subtitles */
          av_dict_set(&opts, "seekable", "0", 0);
      }

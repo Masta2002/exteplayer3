@@ -4,37 +4,25 @@ Date: Wed, 4 Nov 2026 08:30:56 +0100
 Subject: [PATCH 30/49] decryption key extention
 
 Ported to FFmpeg 9.0.2 from 0001-decryption-key-extention.patch.
-Port: dashdec, isom.h, internal.h and mf_utils.h hunks applied with
-offsets (trailing whitespace dropped). mov.c: the per stream video/audio
-key is now checked before get_key_from_kid(), and get_key_from_kid()
-returns an error instead of av_assert0() when neither a KID dictionary
-nor a default key is set - with only decryption_video_key or
-decryption_audio_key given the original aborted the process. The
-tls_openssl.c hunk (#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME around SNI) is
-dropped: 9.0.2 configure requires OpenSSL >= 1.1.1, where the macro is
-always defined, and the SNI code was rewritten (error checked call).
+Port: dashdec and isom.h hunks applied with offsets (trailing whitespace
+dropped). mov.c: the per stream video/audio key is now checked before
+get_key_from_kid(), and get_key_from_kid() returns an error instead of
+av_assert0() when neither a KID dictionary nor a default key is set -
+with only decryption_video_key or decryption_audio_key given the
+original aborted the process. The tls_openssl.c hunk (#ifdef
+SSL_CTRL_SET_TLSEXT_HOSTNAME around SNI) is dropped: 9.0.2 configure
+requires OpenSSL >= 1.1.1, where the macro is always defined, and the
+SNI code was rewritten (error checked call).
+Review: the internal.h (UUID_BUF_SIZE) and mf_utils.h (#include
+<wchar.h>) hunks are dropped as well; nothing in the tree uses them.
 ---
- libavcodec/mf_utils.h  |  1 +
- libavformat/dashdec.c  | 45 ++++++++++++++++++++++++++++--
- libavformat/internal.h |  1 +
- libavformat/isom.h     |  4 +++
- libavformat/mov.c      | 62 ++++++++++++++++++++++++++++++++++++++----
- 5 files changed, 106 insertions(+), 7 deletions(-)
+ libavformat/dashdec.c | 45 +++++++++++++++++++++++++++++--
+ libavformat/isom.h    |  4 +++
+ libavformat/mov.c     | 62 +++++++++++++++++++++++++++++++++++++++----
+ 3 files changed, 104 insertions(+), 7 deletions(-)
 
-diff --git a/libavcodec/mf_utils.h b/libavcodec/mf_utils.h
-index ecebb6fc..a91dc76c 100644
---- a/libavcodec/mf_utils.h
-+++ b/libavcodec/mf_utils.h
-@@ -29,6 +29,7 @@
- // mf*.h headers below indirectly include strmif.h.)
- #include <icodecapi.h>
- #else
-+#include <wchar.h>
- #define NO_DSHOW_STRSAFE
- #include <dshow.h>
- // Older versions of mingw-w64 need codecapi.h explicitly included, while newer
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 1f52c3ef..0fd17a11 100644
+index 4c58c81f..e27c7e73 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -170,6 +170,10 @@ typedef struct DASHContext {
@@ -64,7 +52,7 @@ index 1f52c3ef..0fd17a11 100644
  }
  
  static void free_subtitle_list(DASHContext *c)
-@@ -1190,12 +1196,37 @@ static int parse_manifest_representation(AVFormatContext *s, const char *url,
+@@ -1194,12 +1200,37 @@ static int parse_manifest_representation(AVFormatContext *s, const char *url,
  
      switch (type) {
      case AVMEDIA_TYPE_VIDEO:
@@ -104,7 +92,7 @@ index 1f52c3ef..0fd17a11 100644
          ret = av_dynarray_add_nofree(&c->subtitles, &c->n_subtitles, rep);
          break;
      }
-@@ -1641,6 +1672,8 @@ static int refresh_manifest(AVFormatContext *s)
+@@ -1645,6 +1676,8 @@ static int refresh_manifest(AVFormatContext *s)
      c->audios = NULL;
      c->n_subtitles = 0;
      c->subtitles = NULL;
@@ -113,7 +101,7 @@ index 1f52c3ef..0fd17a11 100644
      ret = parse_manifest(s, s->url, NULL);
      if (ret)
          goto finish;
-@@ -2155,6 +2188,10 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation
+@@ -2166,6 +2199,10 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation
          av_dict_set(&in_fmt_opts, "decryption_key", pls->cenc_decryption_key, 0);
      else if (c->cenc_decryption_key)
          av_dict_set(&in_fmt_opts, "decryption_key", c->cenc_decryption_key, 0);
@@ -124,7 +112,7 @@ index 1f52c3ef..0fd17a11 100644
  
      if (pls->cenc_decryption_keys)
          av_dict_set(&in_fmt_opts, "decryption_keys", pls->cenc_decryption_keys, 0);
-@@ -2752,6 +2789,10 @@ static const AVOption dash_options[] = {
+@@ -2765,6 +2802,10 @@ static const AVOption dash_options[] = {
          OFFSET(allowed_extensions), AV_OPT_TYPE_STRING,
          {.str = "aac,m4a,m4s,m4v,mov,mp4,webm,ts"},
          INT_MIN, INT_MAX, FLAGS},
@@ -135,18 +123,6 @@ index 1f52c3ef..0fd17a11 100644
      { "cenc_decryption_key", "Media default decryption key (hex)", OFFSET(cenc_decryption_key), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
      { "cenc_decryption_keys", "Media decryption keys by KID (hex)", OFFSET(cenc_decryption_keys), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
      { "cenc_decryption_video_key", "Media decryption video key scheme_cenc (hex)", OFFSET(cenc_decryption_video_key), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
-diff --git a/libavformat/internal.h b/libavformat/internal.h
-index a0434398..91af2a67 100644
---- a/libavformat/internal.h
-+++ b/libavformat/internal.h
-@@ -32,6 +32,7 @@
- /** size of probe buffer, for guessing file type from file contents */
- #define PROBE_BUF_MIN 2048
- #define PROBE_BUF_MAX (1 << 20)
-+#define UUID_BUF_SIZE 36
- 
- #ifdef DEBUG
- #    define hex_dump_debug(class, buf, size) av_hex_dump_log(class, AV_LOG_DEBUG, buf, size)
 diff --git a/libavformat/isom.h b/libavformat/isom.h
 index e02af09a..1d4103cb 100644
 --- a/libavformat/isom.h

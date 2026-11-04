@@ -10,10 +10,10 @@ Port: applied clean (offset only).
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 988df3c1..bab28949 100644
+index ab3e1ba3..c6b48d66 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -1815,7 +1815,7 @@ try_again:
+@@ -1820,7 +1820,7 @@ try_again:
              refresh_manifest(pls->parent);
              pls->parent->duration = (int64_t) c->time_shift_buffer_depth * AV_TIME_BASE;
          }

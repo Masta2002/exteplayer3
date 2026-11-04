@@ -11,10 +11,10 @@ Port: the subtitle loop uses the same fragment_timescale > 0 guard that
  1 file changed, 17 insertions(+)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 8df507e8..55243a8e 100644
+index b3b4fa8d..88835a16 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -1679,6 +1679,23 @@ static int refresh_manifest(AVFormatContext *s)
+@@ -1683,6 +1683,23 @@ static int refresh_manifest(AVFormatContext *s)
          }
      }
  

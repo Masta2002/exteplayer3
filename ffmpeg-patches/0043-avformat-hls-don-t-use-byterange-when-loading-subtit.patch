@@ -15,7 +15,7 @@ the extended byte range block of open_input().
  1 file changed, 8 insertions(+)
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 16929db7..66dbf7e5 100644
+index 234fe9e0..c5c68e44 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -859,6 +859,9 @@ static int parse_playlist(HLSContext *c, const char *url,

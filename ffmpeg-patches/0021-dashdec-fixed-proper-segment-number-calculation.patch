@@ -16,10 +16,10 @@ guard.
  1 file changed, 33 insertions(+), 3 deletions(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index ab2330fd..d3a73247 100644
+index 661c3ef1..69e35865 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -1664,8 +1664,18 @@ static int refresh_manifest(AVFormatContext *s)
+@@ -1668,8 +1668,18 @@ static int refresh_manifest(AVFormatContext *s)
          if (cur_video->timelines && cur_video->fragment_timescale > 0) {
              // calc current time
              int64_t currentTime = get_segment_start_time_based_on_timeline(cur_video, cur_video->cur_seq_no) / cur_video->fragment_timescale;
@@ -39,7 +39,7 @@ index ab2330fd..d3a73247 100644
              if (ccur_video->cur_seq_no >= 0) {
                  move_timelines(ccur_video, cur_video, c);
              }
-@@ -1680,8 +1690,18 @@ static int refresh_manifest(AVFormatContext *s)
+@@ -1684,8 +1694,18 @@ static int refresh_manifest(AVFormatContext *s)
          if (cur_audio->timelines && cur_audio->fragment_timescale > 0) {
              // calc current time
              int64_t currentTime = get_segment_start_time_based_on_timeline(cur_audio, cur_audio->cur_seq_no) / cur_audio->fragment_timescale;
@@ -59,7 +59,7 @@ index ab2330fd..d3a73247 100644
              if (ccur_audio->cur_seq_no >= 0) {
                  move_timelines(ccur_audio, cur_audio, c);
              }
-@@ -1697,8 +1717,18 @@ static int refresh_manifest(AVFormatContext *s)
+@@ -1701,8 +1721,18 @@ static int refresh_manifest(AVFormatContext *s)
          if (cur_subtitle->timelines && cur_subtitle->fragment_timescale > 0) {
              // calc current time
              int64_t currentTime = get_segment_start_time_based_on_timeline(cur_subtitle, cur_subtitle->cur_seq_no) / cur_subtitle->fragment_timescale;

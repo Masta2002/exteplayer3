@@ -12,12 +12,17 @@ untouched, and dash_seek() only adds the offset once first_pts is known
 (INT64_MIN / timescale * 1000 could overflow for a stream that was never
 read, e.g. a dry-run seek of a discarded stream). The trace log prints
 the new first PTS instead of the INT64_MIN sentinel.
+Review: first_pts is in the time base of the inner demuxer's stream, not
+in the MPD timescale, so the seek offset is converted with av_rescale_q()
+from that stream time base to milliseconds (and only while the inner
+demuxer is open; the common AV_TIME_BASE value of a later patch replaces
+this).
 ---
- libavformat/dashdec.c | 22 ++++++++++++++++++++++
- 1 file changed, 22 insertions(+)
+ libavformat/dashdec.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index d3a73247..de551145 100644
+index 69e35865..800a67a3 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -123,6 +123,7 @@ struct representation {
@@ -36,7 +41,7 @@ index d3a73247..de551145 100644
      representation_segmenttemplate_node = find_child_node_by_name(representation_node, "SegmentTemplate");
      representation_baseurl_node = find_child_node_by_name(representation_node, "BaseURL");
      representation_segmentlist_node = find_child_node_by_name(representation_node, "SegmentList");
-@@ -2540,6 +2542,23 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2551,6 +2553,23 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
      while (!ff_check_interrupt(c->interrupt_callback) && !ret) {
          ret = av_read_frame(cur->ctx, pkt);
          if (ret >= 0) {
@@ -60,12 +65,14 @@ index d3a73247..de551145 100644
              /* If we got a packet, return it */
              cur->cur_timestamp = av_rescale(pkt->pts, (int64_t)cur->ctx->streams[0]->time_base.num * 90000, cur->ctx->streams[0]->time_base.den);
              pkt->stream_index += cur->stream_index;
-@@ -2600,6 +2619,9 @@ static int dash_seek(AVFormatContext *s, struct representation *pls, int64_t see
+@@ -2611,6 +2630,11 @@ static int dash_seek(AVFormatContext *s, struct representation *pls, int64_t see
      // find the nearest fragment
      if (pls->n_timelines > 0 && pls->fragment_timescale > 0) {
          int64_t num = pls->first_seq_no;
-+        if (pls->first_pts != INT64_MIN)
-+            seek_pos_msec += (pls->first_pts / pls->fragment_timescale) * 1000;
++        /* first_pts is in the time base of the inner demuxer's stream */
++        if (pls->first_pts != INT64_MIN && pls->ctx && pls->ctx->nb_streams > 0)
++            seek_pos_msec += av_rescale_q(pls->first_pts, pls->ctx->streams[0]->time_base,
++                                          (AVRational){ 1, 1000 });
 +
          av_log(pls->parent, AV_LOG_VERBOSE, "dash_seek with SegmentTimeline start n_timelines[%d] "
                 "last_seq_no[%"PRId64"].\n",

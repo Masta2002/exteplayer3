@@ -15,7 +15,7 @@ max_reload immediate retries. Trace log uses PRIu64 instead of %llu.
  1 file changed, 19 insertions(+), 2 deletions(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 4e64ac64..8df507e8 100644
+index e1aa58e5..b3b4fa8d 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -172,6 +172,7 @@ typedef struct DASHContext {
@@ -26,7 +26,7 @@ index 4e64ac64..8df507e8 100644
  } DASHContext;
  
  static int ishttp(char *url)
-@@ -1350,6 +1351,7 @@ static int parse_manifest(AVFormatContext *s, const char *url, AVIOContext *in)
+@@ -1354,6 +1355,7 @@ static int parse_manifest(AVFormatContext *s, const char *url, AVIOContext *in)
          if (ret == 0)
              ret = AVERROR_INVALIDDATA;
      } else {
@@ -34,7 +34,7 @@ index 4e64ac64..8df507e8 100644
          LIBXML_TEST_VERSION
  
          doc = xmlReadMemory(buf.str, buf.len, c->base_url, NULL, 0);
-@@ -1604,6 +1606,16 @@ static int refresh_manifest(AVFormatContext *s)
+@@ -1608,6 +1610,16 @@ static int refresh_manifest(AVFormatContext *s)
      struct representation **subtitles = c->subtitles;
      char *base_url = c->base_url;
  
@@ -51,7 +51,7 @@ index 4e64ac64..8df507e8 100644
      c->base_url = NULL;
      c->n_videos = 0;
      c->videos = NULL;
-@@ -1715,13 +1727,18 @@ static struct fragment *get_current_fragment(struct representation *pls)
+@@ -1719,13 +1731,18 @@ static struct fragment *get_current_fragment(struct representation *pls)
              seg->url_offset = seg_ptr->url_offset;
              return seg;
          } else if (c->is_live) {

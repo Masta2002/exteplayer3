@@ -10,10 +10,10 @@ Port: applied clean (offset only); same change as skyjet18's FFmpeg 8.0 version 
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index b5e30767..1f52c3ef 100644
+index 6b8295aa..4c58c81f 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -2124,7 +2124,7 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation
+@@ -2135,7 +2135,7 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation
      ffio_init_context(&pls->pb, avio_ctx_buffer, INITIAL_BUFFER_SIZE, 0,
                        pls, read_data, NULL, c->is_live && !c->is_startover ? NULL : seek_data);
  

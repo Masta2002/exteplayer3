@@ -34,16 +34,13 @@ ffmpeg_ac4.patch
 0034-avformat-dashdec-reuse-HTTP-connections-and-follow-C.patch
 0035-avformat-dashdec-keep-the-live-position-across-manif.patch
 0036-added-possibility-to-set-decryption-keys-directly-in.patch
-0037-changed-default-user-agent.patch
 0038-options-to-replace-parts-of-key-uri-in-HLS.patch
 0039-fixed-parsing-webvtt-with-STYLE-and-REGION-block.patch
-0040-FFmpeg-devel-1-2-avformat-hls-fix-to-seek-logic.patch
 0041-FFmpeg-devel-v2-1-2-avformat-webvttdec-Add-support-f.patch
 0042-fixed-segfault-in-hls-subtitle-handling.patch
 0043-avformat-hls-don-t-use-byterange-when-loading-subtit.patch
 0044-webvttdec-option-to-insert-fake-subtitle-at-the-end.patch
 0045-subtitles-fixed-subtitle-search-after-seek.patch
 0046-hls-improved-handling-of-event-type-playlist.patch
-0047-add-X-DRM-Api-Level-header-when-using-with-archivczs.patch
 0048-avformat-hls-resync-to-the-live-edge-after-a-media-s.patch
 0049-avformat-pass-tls_verify-on-to-the-connections-of-HL.patch

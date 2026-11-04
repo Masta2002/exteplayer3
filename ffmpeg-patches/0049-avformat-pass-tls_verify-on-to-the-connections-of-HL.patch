@@ -40,7 +40,7 @@ index 9df088f5..f6e1c957 100644
      uint8_t *buf = NULL;
      int ret = 0;
 diff --git a/libavformat/http.c b/libavformat/http.c
-index 23a63c4b..46d2ff87 100644
+index 35f886fb..babfd1ca 100644
 --- a/libavformat/http.c
 +++ b/libavformat/http.c
 @@ -2221,12 +2221,21 @@ static int http_get_short_seek(URLContext *h)

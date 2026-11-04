@@ -12,10 +12,10 @@ and subject are taken from the oe-alliance-core commit that added it.
  1 file changed, 3 insertions(+), 1 deletion(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 0fd17a11..4ed14819 100644
+index e27c7e73..efbc300b 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -2157,7 +2157,9 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation
+@@ -2168,7 +2168,9 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation
      ffio_init_context(&pls->pb, avio_ctx_buffer, INITIAL_BUFFER_SIZE, 0,
                        pls, read_data, NULL, c->is_live && !c->is_startover ? NULL : seek_data);
  

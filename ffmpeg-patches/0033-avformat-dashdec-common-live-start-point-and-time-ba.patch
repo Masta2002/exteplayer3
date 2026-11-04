@@ -34,12 +34,15 @@ Ported to FFmpeg 9.0.2 from 0001-avformat-dashdec-common-live-start-point-and-ti
 Port: the dash_read_packet() hunk was placed by hand, because the 9.0.2
 port of skyjet18's first_pts patch already had the AV_NOPTS_VALUE guards;
 other hunks applied with offsets/fuzz.
+Review: dash_seek() adds the common first_pts_time (AV_TIME_BASE, / 1000
+for milliseconds) to the seek position instead of the per representation
+first_pts, which is in the inner demuxer's stream time base.
 ---
- libavformat/dashdec.c | 97 ++++++++++++++++++++++++++++++++++++++++---
- 1 file changed, 91 insertions(+), 6 deletions(-)
+ libavformat/dashdec.c | 104 ++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 94 insertions(+), 10 deletions(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index dfaa553f..6a93329c 100644
+index 8e0e7b17..2d6a9098 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -182,6 +182,15 @@ typedef struct DASHContext {
@@ -58,7 +61,7 @@ index dfaa553f..6a93329c 100644
  } DASHContext;
  
  static int ishttp(char *url)
-@@ -1525,6 +1534,64 @@ cleanup:
+@@ -1529,6 +1538,64 @@ cleanup:
      return ret;
  }
  
@@ -123,7 +126,7 @@ index dfaa553f..6a93329c 100644
  static int64_t calc_cur_seg_no(AVFormatContext *s, struct representation *pls)
  {
      DASHContext *c = s->priv_data;
-@@ -1537,7 +1604,13 @@ static int64_t calc_cur_seg_no(AVFormatContext *s, struct representation *pls)
+@@ -1541,7 +1608,13 @@ static int64_t calc_cur_seg_no(AVFormatContext *s, struct representation *pls)
              num = pls->first_seq_no;
          } else if (pls->n_timelines) {
              av_log(s, AV_LOG_TRACE, "in n_timelines mode\n");
@@ -138,7 +141,7 @@ index dfaa553f..6a93329c 100644
              {
                  start_time_offset = get_segment_start_time_based_on_timeline(pls, 0xFFFFFFFF) - (2 * c->min_buffer_time) * pls->fragment_timescale;
              }
-@@ -1860,6 +1933,8 @@ try_again:
+@@ -1865,6 +1938,8 @@ try_again:
          }
          if (pls->cur_seq_no < min_seq_no) {
              av_log(pls->parent, AV_LOG_VERBOSE, "old fragment: cur[%"PRId64"] min[%"PRId64"] max[%"PRId64"]\n", (int64_t)pls->cur_seq_no, min_seq_no, max_seq_no);
@@ -147,7 +150,7 @@ index dfaa553f..6a93329c 100644
              pls->cur_seq_no = calc_cur_seg_no(pls->parent, pls);
          } else if (pls->cur_seq_no > max_seq_no) {
              av_log(pls->parent, AV_LOG_VERBOSE, "new fragment: cur[%"PRId64"] min[%"PRId64"] max[%"PRId64"]\n", (int64_t)pls->cur_seq_no, min_seq_no, max_seq_no);
-@@ -2365,6 +2440,8 @@ static int dash_read_header(AVFormatContext *s)
+@@ -2376,6 +2451,8 @@ static int dash_read_header(AVFormatContext *s)
      int i, j;
  
      c->interrupt_callback = &s->interrupt_callback;
@@ -156,7 +159,7 @@ index dfaa553f..6a93329c 100644
  
      if ((ret = ffio_copy_url_options(s->pb, &c->avio_opts)) < 0)
          return ret;
-@@ -2604,14 +2681,21 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2615,14 +2692,21 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
          if (ret >= 0) {
              if(cur->n_fragments != 1)
              {
@@ -183,7 +186,21 @@ index dfaa553f..6a93329c 100644
                      if (pkt->pts != AV_NOPTS_VALUE)
                          pkt->pts -= cur->first_pts;
                      if (pkt->dts != AV_NOPTS_VALUE)
-@@ -2801,6 +2885,7 @@ static const AVOption dash_options[] = {
+@@ -2691,10 +2775,9 @@ static int dash_seek(AVFormatContext *s, struct representation *pls, int64_t see
+     // find the nearest fragment
+     if (pls->n_timelines > 0 && pls->fragment_timescale > 0) {
+         int64_t num = pls->first_seq_no;
+-        /* first_pts is in the time base of the inner demuxer's stream */
+-        if (pls->first_pts != INT64_MIN && pls->ctx && pls->ctx->nb_streams > 0)
+-            seek_pos_msec += av_rescale_q(pls->first_pts, pls->ctx->streams[0]->time_base,
+-                                          (AVRational){ 1, 1000 });
++        /* the packets of all representations were shifted by first_pts_time (AV_TIME_BASE) */
++        if (c->first_pts_time != AV_NOPTS_VALUE)
++            seek_pos_msec += c->first_pts_time / 1000;
+ 
+         if(c->is_live)
+         {
+@@ -2814,6 +2897,7 @@ static const AVOption dash_options[] = {
      { "cenc_decryption_keys", "Media decryption keys by KID (hex)", OFFSET(cenc_decryption_keys), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
      { "cenc_decryption_video_key", "Media decryption video key scheme_cenc (hex)", OFFSET(cenc_decryption_video_key), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },
      { "cenc_decryption_audio_key", "Media decryption audio key scheme_cenc (hex)", OFFSET(cenc_decryption_audio_key), AV_OPT_TYPE_STRING, {.str = NULL}, INT_MIN, INT_MAX, .flags = FLAGS },

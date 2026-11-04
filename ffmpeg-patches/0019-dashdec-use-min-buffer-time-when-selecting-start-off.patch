@@ -11,10 +11,10 @@ Port: applied clean (offset only).
  1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index c9730f18..8cc3c882 100644
+index 1d3dad58..05dd7f61 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -1495,7 +1495,14 @@ static int64_t calc_cur_seg_no(AVFormatContext *s, struct representation *pls)
+@@ -1499,7 +1499,14 @@ static int64_t calc_cur_seg_no(AVFormatContext *s, struct representation *pls)
              num = pls->first_seq_no;
          } else if (pls->n_timelines) {
              av_log(s, AV_LOG_TRACE, "in n_timelines mode\n");

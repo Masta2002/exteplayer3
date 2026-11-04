@@ -13,7 +13,7 @@ gone, so this only simplifies the condition; kept for parity with the
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 0d6e0a1d..16929db7 100644
+index 6b3e7673..234fe9e0 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -1986,7 +1986,7 @@ restart:

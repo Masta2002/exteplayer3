@@ -40,10 +40,10 @@ fragment_timescale > 0 guard of the reload loops is kept.
  1 file changed, 25 insertions(+), 39 deletions(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index f710c635..fc00884d 100644
+index 217d0eef..7c5046f7 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -1873,6 +1873,28 @@ static void move_segments(struct representation *rep_src, struct representation
+@@ -1877,6 +1877,28 @@ static void move_segments(struct representation *rep_src, struct representation
  }
  
  
@@ -72,7 +72,7 @@ index f710c635..fc00884d 100644
  static int refresh_manifest(AVFormatContext *s)
  {
      int ret = 0, i;
-@@ -1932,19 +1954,7 @@ static int refresh_manifest(AVFormatContext *s)
+@@ -1936,19 +1958,7 @@ static int refresh_manifest(AVFormatContext *s)
          struct representation *cur_video = videos[i];
          struct representation *ccur_video = c->videos[i];
          if (cur_video->timelines && cur_video->fragment_timescale > 0) {
@@ -93,7 +93,7 @@ index f710c635..fc00884d 100644
  
              if (ccur_video->cur_seq_no >= 0) {
                  move_timelines(ccur_video, cur_video, c);
-@@ -1958,19 +1968,7 @@ static int refresh_manifest(AVFormatContext *s)
+@@ -1962,19 +1972,7 @@ static int refresh_manifest(AVFormatContext *s)
          struct representation *cur_audio = audios[i];
          struct representation *ccur_audio = c->audios[i];
          if (cur_audio->timelines && cur_audio->fragment_timescale > 0) {
@@ -114,7 +114,7 @@ index f710c635..fc00884d 100644
  
              if (ccur_audio->cur_seq_no >= 0) {
                  move_timelines(ccur_audio, cur_audio, c);
-@@ -1985,19 +1983,7 @@ static int refresh_manifest(AVFormatContext *s)
+@@ -1989,19 +1987,7 @@ static int refresh_manifest(AVFormatContext *s)
          struct representation *cur_subtitle = subtitles[i];
          struct representation *ccur_subtitle = c->subtitles[i];
          if (cur_subtitle->timelines && cur_subtitle->fragment_timescale > 0) {

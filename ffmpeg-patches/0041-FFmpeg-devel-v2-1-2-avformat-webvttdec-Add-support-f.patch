@@ -12,12 +12,15 @@ but webvttdec.c has no such option, so X-TIMESTAMP-MAP was ignored. The
 option and the timestamp conversion are ported unchanged; the STYLE and
 REGION skip is upstream, the map is read from the header chunk there.
 hls_ts_offset is initialised to avoid a maybe-uninitialized warning.
+Review: the option defaults to 0. The HLS demuxer enables it explicitly
+for its own segment demuxers (hls.c, seg_format_opts), so a stand-alone
+WebVTT file is not shifted by its X-TIMESTAMP-MAP.
 ---
  libavformat/webvttdec.c | 45 ++++++++++++++++++++++++++++++++++++++++-
  1 file changed, 44 insertions(+), 1 deletion(-)
 
 diff --git a/libavformat/webvttdec.c b/libavformat/webvttdec.c
-index 436bc1c5..87f5a290 100644
+index 436bc1c5..928bdb99 100644
 --- a/libavformat/webvttdec.c
 +++ b/libavformat/webvttdec.c
 @@ -36,6 +36,7 @@ typedef struct {
@@ -103,7 +106,7 @@ index 436bc1c5..87f5a290 100644
          { "captions",     "WebVTT captions kind",     0, AV_OPT_TYPE_CONST, { .i64 = AV_DISPOSITION_CAPTIONS },     INT_MIN, INT_MAX, KIND_FLAGS, .unit = "webvtt_kind" },
          { "descriptions", "WebVTT descriptions kind", 0, AV_OPT_TYPE_CONST, { .i64 = AV_DISPOSITION_DESCRIPTIONS }, INT_MIN, INT_MAX, KIND_FLAGS, .unit = "webvtt_kind" },
          { "metadata",     "WebVTT metadata kind",     0, AV_OPT_TYPE_CONST, { .i64 = AV_DISPOSITION_METADATA },     INT_MIN, INT_MAX, KIND_FLAGS, .unit = "webvtt_kind" },
-+    { "prefer_hls_mpegts_pts", "Use WebVTT embedded HLS MPEGTS timestamps if available.", OFFSET(prefer_hls_mpegts_pts), AV_OPT_TYPE_INT, { .i64 = 1 }, 0, 1, KIND_FLAGS },
++    { "prefer_hls_mpegts_pts", "Use WebVTT embedded HLS MPEGTS timestamps if available.", OFFSET(prefer_hls_mpegts_pts), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, KIND_FLAGS },
      { NULL }
  };
  

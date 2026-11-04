@@ -16,12 +16,16 @@ ffmpeg-hls-sequence-wrap-resync-fix-6.1.1.patch). The block is placed in
 reload_playlist(), where 9.0.2 has the reload loop; code and comment
 unchanged. 9.0.2 only logs "Media sequence changed unexpectedly" in
 parse_playlist() for this case.
+Review: last_seq_no is set to target_seq_no - 1 so that the following
+"cur_seq_no > last_seq_no" branch takes the resync as progress and
+resets m3u8_hold_counters (with last_seq_no == cur_seq_no the counter
+was incremented instead and could end the stream with EOF).
 ---
  libavformat/hls.c | 29 +++++++++++++++++++++++++++++
  1 file changed, 29 insertions(+)
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 44894ee8..f80ed488 100644
+index 6f1aacb2..1fe751ab 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -1758,6 +1758,35 @@ reload:
@@ -55,7 +59,7 @@ index 44894ee8..f80ed488 100644
 +                   "cur_seq_no %"PRId64" is far beyond playlist window [%"PRId64" - %"PRId64"], resyncing to live edge (seq %"PRId64")\n",
 +                   v->cur_seq_no, v->start_seq_no, v->start_seq_no + v->n_segments - 1, target_seq_no);
 +            v->cur_seq_no = target_seq_no;
-+            v->last_seq_no = target_seq_no;
++            v->last_seq_no = target_seq_no - 1;
 +        }
          if (v->cur_seq_no > v->last_seq_no) {
              v->last_seq_no = v->cur_seq_no;

@@ -5,12 +5,17 @@ Subject: [PATCH 28/49] dashdec: fixed splitted subtitles
 
 Ported to FFmpeg 9.0.2 from 0032-dashdec-fixed-splitted-subtitles.patch.
 Port: applied clean (offset only); same change as skyjet18's FFmpeg 8.0 version (0029).
+Known limitation: subtitle representations are never rebased. fmp4
+subtitles (stpp/wvtt, n_fragments != 1) keep their original timestamps
+while audio/video are shifted by the common first_pts_time of the later
+"common live start point" patch, so they are only in sync when the
+presentation starts near 0.
 ---
  libavformat/dashdec.c | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 3efe375a..b5e30767 100644
+index ed4c2944..6b8295aa 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -970,7 +970,7 @@ static int parse_manifest_representation(AVFormatContext *s, const char *url,

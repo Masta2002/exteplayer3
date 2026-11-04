@@ -11,10 +11,10 @@ and multiple_requests exist unchanged in 9.0.2 http.c.
  1 file changed, 10 insertions(+), 1 deletion(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index de551145..988df3c1 100644
+index 800a67a3..ab3e1ba3 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -1905,13 +1905,22 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+@@ -1916,13 +1916,22 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
      }
  
