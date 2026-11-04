@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: skyjet18 <57456827+skyjet18@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:29:44 +0100
+Subject: [PATCH 46/49] hls: improved handling of event type playlist
+
+- allow seeking in event playlist
+- event playlist will be started from beggining instead of end
+- event playlist is refreshed the same way as live type playlist
+
+Ported to FFmpeg 9.0.2 from 0029-hls-improved-handling-of-event-type-playlist.patch
+(0026 of the FFmpeg 8.0 set). Seeking in EVENT playlists and the
+duration of EVENT playlists (in hls_read_header() and, while the
+playlist grows, at the end of parse_playlist()) are already in 9.0.2,
+so update_duration() is not added. Only the select_cur_seq_no() part is
+ported: EVENT playlists start from the first segment and are matched by
+timestamp when a playlist is selected during playback.
+---
+ libavformat/hls.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 66dbf7e5..44894ee8 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -2114,12 +2114,12 @@ static int64_t select_cur_seq_no(HLSContext *c, struct playlist *pls)
+     /* If playback is already in progress (we are just selecting a new
+      * playlist) and this is a complete file, find the matching segment
+      * by counting durations. */
+-    if (pls->finished && c->cur_timestamp != AV_NOPTS_VALUE) {
++    if ((pls->finished || pls->type == PLS_TYPE_EVENT) && c->cur_timestamp != AV_NOPTS_VALUE) {
+         find_timestamp_in_playlist(c, pls, c->cur_timestamp, &seq_no, NULL);
+         return seq_no;
+     }
+ 
+-    if (!pls->finished) {
++    if (!pls->finished && pls->type != PLS_TYPE_EVENT) {
+         if (!c->first_packet && /* we are doing a segment selection during playback */
+             c->cur_seq_no >= pls->start_seq_no &&
+             c->cur_seq_no < pls->start_seq_no + pls->n_segments)

@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: skyjet18 <57456827+skyjet18@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:27:42 +0100
+Subject: [PATCH 43/49] avformat/hls: don't use byterange when loading
+ subtitles or playlist
+
+Some servers don't like requests with byterange and will respond with HTTP 416, so disable byterange requests for playlists and for subtitles
+
+Ported to FFmpeg 9.0.2 from 0016-avformat-hls-don-t-use-byterange-when-loading-subtit.patch.
+9.0.2 opens the playlist through open_url() instead of io_open; the
+option is set in the same dictionary. The subtitle part is placed after
+the extended byte range block of open_input().
+---
+ libavformat/hls.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 16929db7..66dbf7e5 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -859,6 +859,9 @@ static int parse_playlist(HLSContext *c, const char *url,
+         if (c->http_persistent)
+             av_dict_set(&opts, "multiple_requests", "1", 0);
+ 
++        // don't use byterange when loading playlist - some servers don't like that and return HTTP 416
++        av_dict_set(&opts, "seekable", "0", 0);
++
+         ret = open_url(c->ctx, &in, url, &opts, NULL, NULL);
+         av_dict_free(&opts);
+         if (ret < 0)
+@@ -1533,6 +1536,11 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+         av_dict_set_int(&opts, "end_offset", end_offset, 0);
+     }
+ 
++    if (pls->is_subtitle) {
++        // don't try to load subtitles using byterange - some servers will respond with HTTP 416
++        av_dict_set(&opts, "seekable", "0", 0);
++    }
++
+     av_log(pls->parent, AV_LOG_VERBOSE, "HLS request for url '%s', offset %"PRId64", playlist %d\n",
+            seg->url, seg->url_offset, pls->index);
+ 

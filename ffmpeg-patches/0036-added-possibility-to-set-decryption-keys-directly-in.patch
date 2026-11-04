@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: skyjet18 <57456827+skyjet18@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:23:29 +0100
+Subject: [PATCH 36/49] added possibility to set decryption keys directly in
+ HLS
+
+Ported to FFmpeg 9.0.2 from 0004-added-possibility-to-set-decryption-keys-directly-in.patch
+(compared with 0004 of the FFmpeg 8.0 set). Key fetching is in
+read_key() in 9.0.2; key:// and keys:// are handled at its start. As in
+the 6.1 version, pls->key_url is also set for key:// and keys:// URIs
+(the 8.0 version skips that, so the keys:// check in hls_read_header()
+never matched and decryption_keys was not passed to the mov demuxer).
+---
+ libavformat/hls.c | 29 ++++++++++++++++++++++++++---
+ 1 file changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index e5773c94..2824168e 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1426,6 +1426,24 @@ static int read_key(HLSContext *c, struct playlist *pls, struct segment *seg)
+     AVIOContext *pb = NULL;
+     char *key_url = NULL;
+ 
++    if (!strncmp(seg->key, "key://", 6)) {
++        /* the key is given directly as hex string */
++        if (strlen(seg->key + 6) != sizeof(pls->key) * 2)
++            av_log(pls->parent, AV_LOG_ERROR, "Failed to parse key %s - wrong key length\n",
++                   seg->key + 6);
++        else
++            ff_hex_to_data(pls->key, seg->key + 6);
++        av_strlcpy(pls->key_url, seg->key, sizeof(pls->key_url));
++        return 0;
++    }
++
++    if (!strncmp(seg->key, "keys://", 7)) {
++        /* "keys://" contains multiple kid=key pairs, they are passed to the
++         * mov demuxer as decryption_keys in hls_read_header() */
++        av_strlcpy(pls->key_url, seg->key, sizeof(pls->key_url));
++        return 0;
++    }
++
+     if (NULL != c->key_uri_replace_old && \
+ 		NULL != c-> key_uri_replace_new && \
+ 		'\0' != c->key_uri_replace_old[0]) {
+@@ -2505,9 +2523,14 @@ static int hls_read_header(AVFormatContext *s)
+         seg = current_segment(pls);
+         if (seg && seg->key_type == KEY_SAMPLE_AES) {
+             if (strstr(in_fmt->name, "mov")) {
+-                char key[33];
+-                ff_data_to_hex(key, pls->key, sizeof(pls->key), 0);
+-                av_dict_set(&options, "decryption_key", key, 0);
++                if (!strncmp(pls->key_url, "keys://", 7)) {
++                    /* special URL with encoded kid=key pairs */
++                    av_dict_set(&options, "decryption_keys", pls->key_url + 7, 0);
++                } else {
++                    char key[33];
++                    ff_data_to_hex(key, pls->key, sizeof(pls->key), 0);
++                    av_dict_set(&options, "decryption_key", key, 0);
++                }
+             } else if (!c->crypto_ctx.aes_ctx) {
+                 c->crypto_ctx.aes_ctx = av_aes_alloc();
+                 if (!c->crypto_ctx.aes_ctx) {

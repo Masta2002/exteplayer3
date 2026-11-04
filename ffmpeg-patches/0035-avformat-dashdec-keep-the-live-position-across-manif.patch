@@ -1,0 +1,137 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: carlgustav19660-dev
+ <337150447+carlgustav19660-dev@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:36:50 +0100
+Subject: [PATCH 35/49] avformat/dashdec: keep the live position across
+ manifest reloads (SegmentTimeline)
+
+In this tree cur_seq_no is an absolute segment number (first_seq_no + index).
+refresh_manifest() passed it to get_segment_start_time_based_on_timeline(),
+which expects an index into the timeline, and added the *old* first_seq_no
+to an index found in the *new* timeline. As a result, near the live edge:
+
+- the previous segment was fetched again (audio/video packets repeated,
+  non-monotonic timestamps),
+- when the window had moved, the position jumped back by that many segments,
+- when nothing matched, the position became min-1 and the "old fragment"
+  path re-synced the stream.
+
+Players show this as the picture jumping back a few seconds and audio
+dropouts (seen with RTL and the yospace FAST channels, 2.5 s segments).
+
+- $Number$ templates: the absolute number stays valid, keep it; leaving
+  the window is still handled in get_current_fragment()
+- other templates: map old index -> media time -> new index and add the
+  new first_seq_no; a segment that is not published yet maps to the next one
+
+Measured (4 min each, reading at the live edge, ~1900 edge waits):
+repeated/rejected packets 2144-8350 -> 0, "old fragment" re-syncs 12+ -> 0
+(Bauer sucht Frau / RTLup / Sky Atlantic).
+
+Ported to FFmpeg 9.0.2 from 0003-avformat-dashdec-keep-the-live-position-across-manif.patch.
+Port: rewritten by hand for the 9.0.2 helper semantics: there
+get_segment_start_time_based_on_timeline() takes an absolute segment
+number and calc_next_seg_no_from_timelines() returns one (upstream fix),
+so refreshed_seq_no() passes/returns absolute numbers instead of adding
+first_seq_no itself (same result as the 6.1 version). The upstream
+fragment_timescale > 0 guard of the reload loops is kept.
+---
+ libavformat/dashdec.c | 64 +++++++++++++++++--------------------------
+ 1 file changed, 25 insertions(+), 39 deletions(-)
+
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index f710c635..fc00884d 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -1873,6 +1873,28 @@ static void move_segments(struct representation *rep_src, struct representation
+ }
+ 
+ 
++/* Position of a representation after a manifest reload (SegmentTimeline).
++ * cur_seq_no is an absolute segment number (first_seq_no + index).
++ * $Number$ templates: the number stays valid, keep it; falling out of the
++ * window is handled later in get_current_fragment().
++ * Other templates: map via media time, old segment -> time -> new segment.
++ * In 9.0.2 get_segment_start_time_based_on_timeline() takes and
++ * calc_next_seg_no_from_timelines() returns absolute segment numbers. */
++static int64_t refreshed_seq_no(DASHContext *c, struct representation *old, struct representation *neu)
++{
++    int64_t seq_no, t;
++
++    if (old->url_template && av_stristr(old->url_template, "$Number"))
++        return old->cur_seq_no;
++
++    seq_no = FFMAX(old->cur_seq_no, old->first_seq_no);
++    t = get_segment_start_time_based_on_timeline(old, seq_no);
++    seq_no = calc_next_seg_no_from_timelines(neu, t - 1);
++    if (seq_no < 0) /* not published yet: the next segment after the new timeline */
++        seq_no = calc_max_seg_no(neu, c) + 1;
++    return seq_no;
++}
++
+ static int refresh_manifest(AVFormatContext *s)
+ {
+     int ret = 0, i;
+@@ -1932,19 +1954,7 @@ static int refresh_manifest(AVFormatContext *s)
+         struct representation *cur_video = videos[i];
+         struct representation *ccur_video = c->videos[i];
+         if (cur_video->timelines && cur_video->fragment_timescale > 0) {
+-            // calc current time
+-            int64_t currentTime = get_segment_start_time_based_on_timeline(cur_video, cur_video->cur_seq_no) / cur_video->fragment_timescale;
+-            int64_t next_seg_no = calc_next_seg_no_from_timelines(ccur_video, currentTime * cur_video->fragment_timescale - 1);
+-
+-            // update segments
+-            if( cur_video->cur_seq_no > next_seg_no || cur_video->cur_seq_no < calc_min_seg_no(s, ccur_video) )
+-            {
+-                ccur_video->cur_seq_no = next_seg_no;
+-            }
+-            else
+-            {
+-                ccur_video->cur_seq_no = cur_video->cur_seq_no;
+-            }
++            ccur_video->cur_seq_no = refreshed_seq_no(c, cur_video, ccur_video);
+ 
+             if (ccur_video->cur_seq_no >= 0) {
+                 move_timelines(ccur_video, cur_video, c);
+@@ -1958,19 +1968,7 @@ static int refresh_manifest(AVFormatContext *s)
+         struct representation *cur_audio = audios[i];
+         struct representation *ccur_audio = c->audios[i];
+         if (cur_audio->timelines && cur_audio->fragment_timescale > 0) {
+-            // calc current time
+-            int64_t currentTime = get_segment_start_time_based_on_timeline(cur_audio, cur_audio->cur_seq_no) / cur_audio->fragment_timescale;
+-            int64_t next_seg_no = calc_next_seg_no_from_timelines(ccur_audio, currentTime * cur_audio->fragment_timescale - 1);
+-
+-            // update segments
+-            if( cur_audio->cur_seq_no > next_seg_no || cur_audio->cur_seq_no < calc_min_seg_no(s, ccur_audio))
+-            {
+-                ccur_audio->cur_seq_no = next_seg_no;
+-            }
+-            else
+-            {
+-                ccur_audio->cur_seq_no = cur_audio->cur_seq_no;
+-            }
++            ccur_audio->cur_seq_no = refreshed_seq_no(c, cur_audio, ccur_audio);
+ 
+             if (ccur_audio->cur_seq_no >= 0) {
+                 move_timelines(ccur_audio, cur_audio, c);
+@@ -1985,19 +1983,7 @@ static int refresh_manifest(AVFormatContext *s)
+         struct representation *cur_subtitle = subtitles[i];
+         struct representation *ccur_subtitle = c->subtitles[i];
+         if (cur_subtitle->timelines && cur_subtitle->fragment_timescale > 0) {
+-            // calc current time
+-            int64_t currentTime = get_segment_start_time_based_on_timeline(cur_subtitle, cur_subtitle->cur_seq_no) / cur_subtitle->fragment_timescale;
+-            int64_t next_seg_no = calc_next_seg_no_from_timelines(ccur_subtitle, currentTime * cur_subtitle->fragment_timescale - 1);
+-
+-            // update segments
+-            if( cur_subtitle->cur_seq_no > next_seg_no || cur_subtitle->cur_seq_no < calc_min_seg_no(s, ccur_subtitle))
+-            {
+-                ccur_subtitle->cur_seq_no = next_seg_no;
+-            }
+-            else
+-            {
+-                ccur_subtitle->cur_seq_no = cur_subtitle->cur_seq_no;
+-            }
++            ccur_subtitle->cur_seq_no = refreshed_seq_no(c, cur_subtitle, ccur_subtitle);
+ 
+             if (ccur_subtitle->cur_seq_no >= 0) {
+                 move_timelines(ccur_subtitle, cur_subtitle, c);

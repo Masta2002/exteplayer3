@@ -1,0 +1,78 @@
+name: FFmpeg 9 with the OE-A patches
+
+# Builds FFmpeg 9.0.2 with the patch series in ffmpeg-patches/ (OE-A's
+# FFmpeg 9 patches plus the ffmpeg-ext ones ported to 9), then exteplayer3
+# against it, and runs small checks of the patched demuxers.
+
+on:
+  push:
+    paths:
+      - 'ffmpeg-patches/**'
+      - '.github/workflows/ffmpeg9-oea.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential pkg-config autoconf automake libtool nasm \
+          libxml2-dev libssl-dev libbluray-dev librtmp-dev libudfread-dev \
+          zlib1g-dev libbz2-dev liblzma-dev libx264-dev
+
+    - name: Patch FFmpeg 9.0.2
+      run: |
+        mkdir ffsrc && cd ffsrc
+        curl -sL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz -o ff.tar.xz
+        tar -xf ff.tar.xz --strip-components=1
+        while read -r p; do
+          case "$p" in ''|'#'*) continue;; esac
+          echo "== $p"
+          patch -p1 --no-backup-if-mismatch -s < "../ffmpeg-patches/$p"
+        done < ../ffmpeg-patches/series
+
+    - name: Build FFmpeg
+      run: |
+        cd ffsrc
+        ./configure --prefix=$HOME/ffmpeg --enable-shared --disable-static --disable-doc \
+          --enable-gpl --enable-libxml2 --enable-openssl --enable-libx264 --enable-zlib \
+          --extra-cflags="-Werror=implicit-function-declaration -Werror=incompatible-pointer-types -Werror=int-conversion"
+        make -j$(nproc) install
+
+    - name: Build exteplayer3
+      run: |
+        ./autogen.sh
+        PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig ./configure
+        make -j$(nproc)
+        LD_LIBRARY_PATH=$HOME/ffmpeg/lib ./exteplayer3 2>&1 | grep -q -- '-Q'
+
+    - name: Check the patched demuxers
+      env:
+        LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
+      run: |
+        set -eux
+        FF=$HOME/ffmpeg/bin/ffmpeg; FP=$HOME/ffmpeg/bin/ffprobe
+        mkdir t && cd t
+        # HLS with WebVTT subtitles
+        printf 'WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nhello\n' > sub.vtt
+        $FF -v error -f lavfi -i testsrc=d=6:s=160x90 -f lavfi -i sine=d=6 -i sub.vtt \
+            -map 0:v -map 1:a -map 2:s -c:v libx264 -g 25 -c:a aac -c:s webvtt \
+            -f hls -hls_time 2 -hls_playlist_type vod -master_pl_name master.m3u8 \
+            -var_stream_map "v:0,a:0,s:0,sgroup:subs" hls_%v.m3u8
+        $FP -v error -show_entries stream=codec_type -of csv=p=0 master.m3u8 | sort | tee hls.txt
+        grep -q video hls.txt; grep -q audio hls.txt
+        # DASH
+        $FF -v error -f lavfi -i testsrc=d=6:s=160x90 -f lavfi -i sine=d=6 -c:v libx264 -g 25 -c:a aac \
+            -f dash -seg_duration 2 dash.mpd
+        $FP -v error -show_entries stream=codec_type -of csv=p=0 dash.mpd | sort | tee dash.txt
+        grep -q video dash.txt; grep -q audio dash.txt
+        $FF -v error -i dash.mpd -f null -
+        # CENC encrypted MP4, decrypted by key
+        K=00112233445566778899aabbccddeeff
+        $FF -v error -f lavfi -i testsrc=d=3:s=160x90 -c:v libx264 -encryption_scheme cenc-aes-ctr \
+            -encryption_key $K -encryption_kid 0102030405060708090a0b0c0d0e0f10 enc.mp4
+        $FF -v error -decryption_key $K -i enc.mp4 -f null -

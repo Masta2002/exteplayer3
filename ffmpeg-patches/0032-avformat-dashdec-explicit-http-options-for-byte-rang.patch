@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: boingbasti <boingbasti@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:33:56 +0100
+Subject: [PATCH 32/49] avformat/dashdec: explicit http options for byte range
+ segments
+
+Byte range segments (several segments share one file) get seekable=1
+and reconnect=1 instead of the auto default, which is more robust when
+the connection breaks in the middle of a range request.
+
+Ported to FFmpeg 9.0.2 from ffmpeg-dash-http-options.patch.
+Port: the patch was written for a tree without skyjet18's seg->seekable.
+The standalone segment part (seekable=0 + multiple_requests=1) is already
+done by skyjet18's 'set optimal http settings based on media type', so
+only the byte range case (seg->size >= 0) is added to the seekable
+branch. Subtitles keep skyjet18's seekable=0.
+---
+ libavformat/dashdec.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 4ed14819..dfaa553f 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -1953,9 +1953,11 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+         /* disable seeking for subtitles - subtitles are small and many servers doesn't support byterange for subtitles */
+         av_dict_set(&opts, "seekable", "0", 0);
+     }
+-    else if(seg->seekable)
++    else if(seg->seekable || seg->size >= 0)
+     {
+-        /* single big segment - allow seeking and reconnect if needed */
++        /* single big segment or byte range segment (several segments share
++         * one file) - allow seeking and reconnect if needed, more robust when
++         * the connection breaks in the middle of a range request */
+         av_dict_set(&opts, "seekable", "1", 0);
+         av_dict_set(&opts, "reconnect", "1", 0);
+     }

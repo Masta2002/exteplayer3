@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: skyjet18 <57456827+skyjet18@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:24:33 +0100
+Subject: [PATCH 39/49] fixed parsing webvtt with STYLE and REGION block
+
+Ported to FFmpeg 9.0.2 from 0007-fixed-parsing-webvtt-with-STYLE-and-REGION-block.patch.
+Skipping STYLE and REGION header blocks is already upstream in 9.0.2
+(webvtt_read_header()); only the skip of chunks without a "-->" cue
+timing line is ported.
+---
+ libavformat/webvttdec.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/libavformat/webvttdec.c b/libavformat/webvttdec.c
+index 4ca1e939..436bc1c5 100644
+--- a/libavformat/webvttdec.c
++++ b/libavformat/webvttdec.c
+@@ -119,6 +119,9 @@ static int webvtt_read_header(AVFormatContext *s)
+                 p++;
+         }
+ 
++        if (!strstr(p, "-->"))
++            continue;
++
+         /* cue timestamps */
+         if ((ts_start = read_ts(p)) == AV_NOPTS_VALUE)
+             break;

@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Masta2002 <Masta2002@gmx.net>
+Date: Wed, 4 Nov 2026 08:34:04 +0100
+Subject: [PATCH 49/49] avformat: pass tls_verify on to the connections of HLS
+ and DASH segments
+
+HLS and DASH copy only some options of the playlist connection to the
+connections of their segments (ffio_copy_url_options()). Since FFmpeg
+verifies TLS certificates by default, a player that sets tls_verify=0
+for streams with bad certificates gets it only for the playlist, and the
+segments fail.
+
+tls_verify is an option of the tls protocol, which http opens as its
+underlying connection (s->hd); http forwards unknown options there, but
+its AVClass had no child_next, so av_opt_get() with
+AV_OPT_SEARCH_CHILDREN on the playlist AVIOContext could not reach it.
+Expose s->hd as child of the http/https class and add tls_verify to the
+copied options. http options are still found first, so the lookup of the
+options copied so far does not change.
+
+The option is only found if the playlist itself was loaded over https;
+for an http playlist there is no tls connection to read it from.
+---
+ libavformat/aviobuf.c | 3 ++-
+ libavformat/http.c    | 9 +++++++++
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/libavformat/aviobuf.c b/libavformat/aviobuf.c
+index 9df088f5..f6e1c957 100644
+--- a/libavformat/aviobuf.c
++++ b/libavformat/aviobuf.c
+@@ -993,7 +993,8 @@ void ffio_write_lines(AVIOContext *s, const unsigned char *buf, int size,
+ int ffio_copy_url_options(AVIOContext* pb, AVDictionary** avio_opts)
+ {
+     const char *opts[] = {
+-        "headers", "user_agent", "cookies", "http_proxy", "referer", "rw_timeout", "icy", NULL };
++        "headers", "user_agent", "cookies", "http_proxy", "referer", "rw_timeout", "icy",
++        "tls_verify", NULL };
+     const char **opt = opts;
+     uint8_t *buf = NULL;
+     int ret = 0;
+diff --git a/libavformat/http.c b/libavformat/http.c
+index 23a63c4b..46d2ff87 100644
+--- a/libavformat/http.c
++++ b/libavformat/http.c
+@@ -2221,12 +2221,21 @@ static int http_get_short_seek(URLContext *h)
+     return ffurl_get_short_seek(s->hd);
+ }
+ 
++/* Expose the underlying connection (e.g. tls) as child, so that its
++ * options (e.g. tls_verify) can be read with AV_OPT_SEARCH_CHILDREN. */
++static void *http_child_next(void *obj, void *prev)
++{
++    HTTPContext *s = obj;
++    return prev ? NULL : s->hd;
++}
++
+ #define HTTP_CLASS(flavor)                          \
+ static const AVClass flavor ## _context_class = {   \
+     .class_name = # flavor,                         \
+     .item_name  = av_default_item_name,             \
+     .option     = http_options,                     \
+     .version    = LIBAVUTIL_VERSION_INT,            \
++    .child_next = http_child_next,                  \
+ }
+ 
+ #if CONFIG_HTTP_PROTOCOL

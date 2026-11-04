@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: skyjet18 <57456827+skyjet18@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:30:34 +0100
+Subject: [PATCH 42/49] fixed segfault in hls subtitle handling
+
+Ported to FFmpeg 9.0.2 from 0012-fixed-segfault-in-hls-subtitle-handling.patch
+(0010 of the FFmpeg 8.0 set, used as base). Applied unchanged (offset
+only). 9.0.2 already closes a stale input when the subtitle context is
+gone, so this only simplifies the condition; kept for parity with the
+8.0 set.
+---
+ libavformat/hls.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/libavformat/hls.c b/libavformat/hls.c
+index 0d6e0a1d..16929db7 100644
+--- a/libavformat/hls.c
++++ b/libavformat/hls.c
+@@ -1986,7 +1986,7 @@ restart:
+     if (v->input && !v->ctx)
+         ff_format_io_close(v->parent, &v->input);
+ 
+-    if (!v->input && !v->ctx) {
++    if (!v->ctx) {
+         ret = init_subtitle_context(v);
+         if (ret < 0)
+             return ret;

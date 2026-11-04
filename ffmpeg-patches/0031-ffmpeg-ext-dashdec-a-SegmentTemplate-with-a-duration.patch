@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: WXbet <57314510+WXbet@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:31:12 +0100
+Subject: [PATCH 31/49] ffmpeg-ext: dashdec, a SegmentTemplate with a duration
+ is not seekable
+
+Ported to FFmpeg 9.0.2 from 0014-dashdec-segment-template-not-seekable.patch.
+Port: applied clean (offset only). The patch file has no header; author
+and subject are taken from the oe-alliance-core commit that added it.
+---
+ libavformat/dashdec.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 0fd17a11..4ed14819 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -2157,7 +2157,9 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation
+     ffio_init_context(&pls->pb, avio_ctx_buffer, INITIAL_BUFFER_SIZE, 0,
+                       pls, read_data, NULL, c->is_live && !c->is_startover ? NULL : seek_data);
+ 
+-    if(pls->type == AVMEDIA_TYPE_SUBTITLE || pls->n_timelines || pls->n_fragments > 1 || c->is_live)
++    /* a SegmentTemplate with a duration has neither timelines nor fragments,
++     * but many segments: only a single file is seekable */
++    if(pls->type == AVMEDIA_TYPE_SUBTITLE || pls->n_timelines || pls->n_fragments > 1 || pls->url_template || c->is_live)
+     {
+         pls->pb.pub.seekable = 0;
+     }

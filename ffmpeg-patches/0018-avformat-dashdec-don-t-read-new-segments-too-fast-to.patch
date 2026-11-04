@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: skyjet18 <57456827+skyjet18@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:25:23 +0100
+Subject: [PATCH 18/49] avformat/dashdec don't read new segments too fast to
+ avoid HTTP 404 error
+
+Ported to FFmpeg 9.0.2 from 0015-avformat-dashdec-don-t-read-new-segments-too-fast-to.patch.
+Port: applied with fuzz; added an interrupt check before jumping back,
+because the retry loop at try_again only checks the interrupt callback
+when the representation has a fragment list (SegmentTemplate live
+streams would otherwise keep waiting after the player closed).
+---
+ libavformat/dashdec.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 55243a8e..c9730f18 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -1728,6 +1728,7 @@ static struct fragment *get_current_fragment(struct representation *pls)
+     DASHContext *c = pls->parent->priv_data;
+     int reload_count = 0;
+ 
++try_again:
+     while (( !ff_check_interrupt(c->interrupt_callback)&& pls->n_fragments > 0)) {
+         if (pls->cur_seq_no >= 0 && pls->cur_seq_no < pls->n_fragments) {
+             seg_ptr = pls->fragments[pls->cur_seq_no];
+@@ -1771,7 +1772,15 @@ static struct fragment *get_current_fragment(struct representation *pls)
+             av_log(pls->parent, AV_LOG_VERBOSE, "old fragment: cur[%"PRId64"] min[%"PRId64"] max[%"PRId64"]\n", (int64_t)pls->cur_seq_no, min_seq_no, max_seq_no);
+             pls->cur_seq_no = calc_cur_seg_no(pls->parent, pls);
+         } else if (pls->cur_seq_no > max_seq_no) {
+-            av_log(pls->parent, AV_LOG_VERBOSE, "new fragment: min[%"PRId64"] max[%"PRId64"]\n", min_seq_no, max_seq_no);
++            av_log(pls->parent, AV_LOG_VERBOSE, "new fragment: cur[%"PRId64"] min[%"PRId64"] max[%"PRId64"]\n", (int64_t)pls->cur_seq_no, min_seq_no, max_seq_no);
++
++            /* we are reading data too fast - wait and try again later, because we will get HTTP 404 ...*/
++            av_usleep(100*1000);
++            if (ff_check_interrupt(c->interrupt_callback))
++                return NULL;
++            goto try_again;
++        } else {
++            av_log(pls->parent, AV_LOG_VERBOSE, "cur fragment: cur[%"PRId64"] min[%"PRId64"] max[%"PRId64"]\n", (int64_t)pls->cur_seq_no, min_seq_no, max_seq_no);
+         }
+         seg = av_mallocz(sizeof(struct fragment));
+         if (!seg) {

@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: skyjet18 <57456827+skyjet18@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:29:15 +0100
+Subject: [PATCH 29/49] dashdec: fixed playback of some live streams
+
+Ported to FFmpeg 9.0.2 from 0033-dashdec-fixed-playback-of-some-live-streams.patch.
+Port: applied clean (offset only); same change as skyjet18's FFmpeg 8.0 version (0030).
+---
+ libavformat/dashdec.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index b5e30767..1f52c3ef 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -2124,7 +2124,7 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation
+     ffio_init_context(&pls->pb, avio_ctx_buffer, INITIAL_BUFFER_SIZE, 0,
+                       pls, read_data, NULL, c->is_live && !c->is_startover ? NULL : seek_data);
+ 
+-    if(pls->type == AVMEDIA_TYPE_SUBTITLE || pls->n_timelines || pls->n_fragments > 1)
++    if(pls->type == AVMEDIA_TYPE_SUBTITLE || pls->n_timelines || pls->n_fragments > 1 || c->is_live)
+     {
+         pls->pb.pub.seekable = 0;
+     }

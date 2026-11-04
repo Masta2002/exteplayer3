@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: skyjet18 <57456827+skyjet18@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 08:24:59 +0100
+Subject: [PATCH 16/49] avformat/dashdec don't reload manifest often then
+ needed
+
+Ported to FFmpeg 9.0.2 from 0013-avformat-dashdec-don-t-reload-manifest-often-then-ne.patch.
+Port: 9.0.2 limits the reload loop in get_current_fragment() with the
+upstream max_reload option. refresh_manifest() now returns 1 when it
+skipped the reload, and that loop sleeps 100 ms instead of counting a
+reload, so a still valid manifest does not end the stream after
+max_reload immediate retries. Trace log uses PRIu64 instead of %llu.
+---
+ libavformat/dashdec.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 4e64ac64..8df507e8 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -172,6 +172,7 @@ typedef struct DASHContext {
+     int is_init_section_common_audio;
+     int is_init_section_common_subtitle;
+ 
++    uint64_t playlist_load_time;
+ } DASHContext;
+ 
+ static int ishttp(char *url)
+@@ -1350,6 +1351,7 @@ static int parse_manifest(AVFormatContext *s, const char *url, AVIOContext *in)
+         if (ret == 0)
+             ret = AVERROR_INVALIDDATA;
+     } else {
++        c->playlist_load_time = get_current_time_in_sec();
+         LIBXML_TEST_VERSION
+ 
+         doc = xmlReadMemory(buf.str, buf.len, c->base_url, NULL, 0);
+@@ -1604,6 +1606,16 @@ static int refresh_manifest(AVFormatContext *s)
+     struct representation **subtitles = c->subtitles;
+     char *base_url = c->base_url;
+ 
++    uint64_t cur_time = get_current_time_in_sec();
++//    uint64_t publish_time = c->publish_time > 0 ? c->publish_time : c->playlist_load_time;
++    uint64_t publish_time = c->playlist_load_time;
++
++    if ( publish_time > 0 && (publish_time + c->minimum_update_period) >= cur_time) {
++        av_log(s, AV_LOG_TRACE, "Manifest refresh not needed - current one is still %"PRIu64"s valid\n", (publish_time + c->minimum_update_period) - cur_time);
++        /* > 0: manifest was not reloaded (callers counting reloads use this) */
++        return 1;
++    }
++
+     c->base_url = NULL;
+     c->n_videos = 0;
+     c->videos = NULL;
+@@ -1715,13 +1727,18 @@ static struct fragment *get_current_fragment(struct representation *pls)
+             seg->url_offset = seg_ptr->url_offset;
+             return seg;
+         } else if (c->is_live) {
+-            if (reload_count++ >= c->max_reload) {
++            if (reload_count >= c->max_reload) {
+                 av_log(pls->parent, AV_LOG_ERROR,
+                        "Reached max manifest reloads (%d) at seq %"PRId64"\n",
+                        c->max_reload, pls->cur_seq_no);
+                 return NULL;
+             }
+-            refresh_manifest(pls->parent);
++            if (refresh_manifest(pls->parent) > 0) {
++                /* manifest is still valid - wait instead of counting a reload */
++                av_usleep(100*1000);
++            } else {
++                reload_count++;
++            }
+         } else {
+             break;
+         }
