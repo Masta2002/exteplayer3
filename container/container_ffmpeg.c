@@ -233,6 +233,11 @@ typedef int32_t (* Write_FN) (void  *, void *);
 
 #include <libavutil/avstring.h>
 
+/* AC-4 came with FFmpeg 6.1; before, a value no stream has */
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(60, 31, 100)
+#define AV_CODEC_ID_AC4 0x7fff0001
+#endif
+
 /* FFmpeg dropped the FF_PROFILE_ names for AV_PROFILE_ */
 #if !defined(FF_PROFILE_AAC_ELD) && defined(AV_PROFILE_AAC_ELD)
 #define FF_PROFILE_AAC_ELD AV_PROFILE_AAC_ELD
