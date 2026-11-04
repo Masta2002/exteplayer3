@@ -2,49 +2,94 @@ name: Compile exteplayer3
 
 on:
   push:
-    branches: [ master ]
   pull_request:
-    branches: [ master ]
   workflow_dispatch:
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
+env:
+  # warnings that are crashes on the box, errors here
+  CFLAGS: -O2 -Werror=implicit-function-declaration -Werror=int-conversion -Werror=incompatible-pointer-types
 
+jobs:
+  # the FFmpeg of the distribution, with and without the DreamNextGen backend
+  distro:
+    name: ${{ matrix.os }} ${{ matrix.dreamnextgen && 'dreamnextgen' || '' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        dreamnextgen: [false, true]
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          pkg-config \
-          autoconf \
-          automake \
-          libtool \
-          libavformat-dev \
-          libavcodec-dev \
-          libavutil-dev \
-          libswresample-dev \
-          libswscale-dev \
-          libxml2-dev \
-          libssl-dev \
-          libbluray-dev \
-          librtmp-dev \
-          libudfread-dev \
-          libasound2-dev \
-          zlib1g-dev \
-          libbz2-dev \
-          liblzma-dev \
-          libpthread-stubs0-dev
-
-    - name: Bootstrap autotools
-      run: ./autogen.sh
+        sudo apt-get install -y build-essential pkg-config autoconf automake libtool \
+          libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libswscale-dev \
+          libxml2-dev libssl-dev libbluray-dev librtmp-dev libudfread-dev libasound2-dev \
+          zlib1g-dev libbz2-dev liblzma-dev
 
     - name: Configure
-      run: ./configure
+      run: |
+        ./autogen.sh
+        ./configure ${{ matrix.dreamnextgen && '--enable-dreamnextgen' || '' }}
 
-    - name: Compile exteplayer3
+    - name: Compile
       run: make -j$(nproc)
+
+    - name: Start
+      run: ./exteplayer3 2>&1 | grep -q -- '-Q'
+
+  # the FFmpeg the images use (ffmpeg-ext: skyjet18's 6.1 branch at the commit
+  # oe-alliance-core pins) and the newest release
+  ffmpeg:
+    name: FFmpeg ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ffmpeg-ext (skyjet18 6.1)
+            url: https://github.com/skyjet18/FFmpeg/archive/ea4d5204424fa53de15dbc2781424af7223b3bb9.tar.gz
+          - name: "9.0"
+            url: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential pkg-config autoconf automake libtool nasm \
+          libxml2-dev libssl-dev libbluray-dev librtmp-dev libudfread-dev \
+          zlib1g-dev libbz2-dev liblzma-dev
+
+    - name: Cache FFmpeg
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/ffmpeg
+        key: ffmpeg-${{ hashFiles('.github/workflows/build.yml') }}-${{ matrix.url }}
+
+    - name: Build FFmpeg
+      if: steps.cache.outputs.cache-hit != 'true'
+      env:
+        CFLAGS: -O2
+      run: |
+        mkdir src && cd src
+        curl -sL "${{ matrix.url }}" -o ff.tar
+        tar -xf ff.tar --strip-components=1
+        ./configure --prefix=$HOME/ffmpeg --enable-shared --disable-static \
+          --disable-programs --disable-doc --enable-libxml2 --enable-zlib
+        make -j$(nproc) install
+
+    - name: Configure
+      run: |
+        ./autogen.sh
+        PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig ./configure
+
+    - name: Compile
+      run: make -j$(nproc)
+
+    - name: Start
+      run: LD_LIBRARY_PATH=$HOME/ffmpeg/lib ./exteplayer3 2>&1 | grep -q -- '-Q'
