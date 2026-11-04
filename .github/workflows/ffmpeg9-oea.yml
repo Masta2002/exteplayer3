@@ -50,6 +50,14 @@ jobs:
         make -j$(nproc)
         LD_LIBRARY_PATH=$HOME/ffmpeg/lib ./exteplayer3 2>&1 | grep -q -- '-Q'
 
+    - name: Build exteplayer3 of oe-alliance master
+      run: |
+        git clone --depth 1 https://github.com/oe-alliance/exteplayer3 upstream
+        cd upstream
+        ./autogen.sh
+        PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig ./configure
+        make -j$(nproc)
+
     - name: Check the patched demuxers
       env:
         LD_LIBRARY_PATH: /home/runner/ffmpeg/lib

@@ -17,65 +17,37 @@ reload_playlist(), where 9.0.2 has the reload loop; code and comment
 unchanged. 9.0.2 only logs "Media sequence changed unexpectedly" in
 parse_playlist() for this case.
 ---
- libavformat/hls.c | 57 +++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 57 insertions(+)
+ libavformat/hls.c | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 44894ee8..5abc86e9 100644
+index 44894ee8..f80ed488 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -1758,6 +1758,63 @@ reload:
+@@ -1758,6 +1758,35 @@ reload:
                     v->start_seq_no - v->cur_seq_no);
              v->cur_seq_no = v->start_seq_no;
          }
-+        /* SSAI-Sequence-Wrap: Server-seitige Werbeeinblendungen setzen
-+         * die Media-Sequence beim Ruecksprung zum Hauptprogramm zurueck (z.B.
-+         * von 325 auf 31). cur_seq_no liegt dann WEIT VOR dem neuen Playlist-
-+         * Fenster, nicht dahinter, der Reset-Zweig oben greift also nicht.
-+         * Ohne diese Absicherung haelt FFmpeg das Segment faelschlich fuer noch
-+         * nicht veroeffentlicht und wartet bis zu max_reload-mal (siehe
-+         * container_ffmpeg.c) auf ein Segment, das nie kommt. Bei regulaerem
-+         * Live-HLS wird diese Bedingung nicht ausgeloest, da cur_seq_no dort
-+         * nie weiter als ein Segment ueber das aktuelle Fenster hinauslaeuft.
++        /* Media sequence wrap after server side ad insertion: going back
++         * from the ad to the programme, some servers restart the media
++         * sequence (e.g. from 325 to 31). cur_seq_no is then far AHEAD of the
++         * new playlist window, not behind it, so the branch above does not
++         * catch it, and the segment would be waited for up to max_reload
++         * times although it never comes. Regular live HLS never gets here:
++         * cur_seq_no is at most one segment past the window.
 +         *
-+         * Ziel-Segment: NICHT auf start_seq_no selbst springen, das ist das
-+         * AELTESTE Segment im neuen Fenster, nicht die Live-Kante. Sondern
-+         * nah an das NEUESTE verfuegbare Segment des neuen Fensters springen,
-+         * aber mit einem Segment Puffer-Vorlauf (start_seq_no + n_segments - 2)
-+         * statt exakt auf die Kante (n_segments - 1).
++         * The target is not start_seq_no (the oldest segment of the new
++         * window) but one segment before the live edge
++         * (start_seq_no + n_segments - 2). Right at the edge (n_segments - 1)
++         * the picture stalled for a few seconds after every resync, the
++         * decoder had no data in reserve; n_segments - 3, after FFmpeg's
++         * live_start_index default for a cold start, jumped back three
++         * segments (15 s with 5 s segments) for no reason, as the player
++         * still has data buffered.
 +         *
-+         * n_segments - 1 (exakte Live-Kante, Puffer null) wurde live
-+         * getestet (2026-10-25) und fuehrte direkt nach jedem Resync fuer
-+         * ein paar Sekunden zu kurzen Bildstehern: ohne jeglichen Vorlauf
-+         * verhungert der Decoder, sobald das naechste Segment auch nur einen
-+         * Wimpernschlag braucht, bis sich ueber ein paar Segmente wieder ein
-+         * kleiner Puffer aufgebaut hat. Ein Segment Vorlauf (n_segments - 2,
-+         * bei den ueblichen 5s-Segmenten solcher Anbieter) reicht als Polster, ohne die alten
-+         * unnoetigen 10-15s Ruecksprung von n_segments - 3 zurueckzuholen.
-+         *
-+         * Fruehere Version nutzte hier start_seq_no + max(n_segments - 3, 0),
-+         * angelehnt an FFmpegs eigenes live_start_index-Default (-3) fuer
-+         * den allerersten Live-Einstieg (Kaltstart, Puffer-Vorlauf noetig,
-+         * bevor ueberhaupt etwas abgespielt wird). Bei einem Resync MITTEN
-+         * in der laufenden Wiedergabe ist dieser Puffer-Vorlauf falsch: der
-+         * Player hat schon Daten im Puffer, braucht keinen zusaetzlichen
-+         * Sicherheitsabstand. Live nachgewiesen (2026-10-25,
-+         * live verifiziert): bei einem typischen 5-Segment-
-+         * Fenster ergab n_segments-3=2 einen unnoetigen Ruecksprung von
-+         * -14,976s (exakt 3 Segmente) bei JEDEM echten Resync, auch wenn der
-+         * Sequence-Wrap selbst berechtigt war (keine CDN-Jitter-Fehlauslösung
-+         * - die +6-Schwelle greift hier bereits korrekt).
-+         *
-+         * Schwelle +1 war zu knapp: bei einem kleinen 5-Segment-Fenster
-+         * reicht ein einzelner hinterherhinkender CDN-Edge-Knoten (2
-+         * Segmente Jitter) schon aus, um faelschlich auszuloesen und
-+         * mitten in einen laengst beendeten Werbespot zurueckzuspringen,
-+         * obwohl der naechste Reload Sekunden spaeter laengst wieder die
-+         * frische Playlist geliefert haette (live reproduziert,
-+         * 2026-10-25). Ein echter Sequence-Wrap nach Werbe-Ruecksprung
-+         * (siehe Beispiel oben: 325 auf 31) liegt dagegen immer mit
-+         * riesigem Abstand ausserhalb des Fensters - +6 Segmente Toleranz
-+         * aendern daran nichts, filtern aber den kleinen CDN-Jitter raus. */
++         * The +6 segments of tolerance keep a lagging CDN edge (a playlist a
++         * segment or two behind) from triggering it; a real wrap is far
++         * outside the window anyway. Tested live on 2026-10-25. */
 +        else if (v->n_segments > 0 &&
 +                 v->cur_seq_no > v->start_seq_no + v->n_segments + 6) {
 +            int64_t target_seq_no = v->start_seq_no + FFMAX(v->n_segments - 2, 0);
