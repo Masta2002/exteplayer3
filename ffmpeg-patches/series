@@ -44,3 +44,4 @@ ffmpeg_ac4.patch
 0046-hls-improved-handling-of-event-type-playlist.patch
 0048-avformat-hls-resync-to-the-live-edge-after-a-media-s.patch
 0049-avformat-pass-tls_verify-on-to-the-connections-of-HL.patch
+0050-hls-added-support-for-EXT-X-DISCONTINUITY.patch

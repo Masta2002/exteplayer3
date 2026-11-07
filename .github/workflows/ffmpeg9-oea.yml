@@ -43,6 +43,15 @@ jobs:
           --extra-cflags="-Werror=implicit-function-declaration -Werror=incompatible-pointer-types -Werror=int-conversion"
         make -j$(nproc) install
 
+    - name: FATE tests of the HLS discontinuity patch
+      run: |
+        cd ffsrc
+        export LD_LIBRARY_PATH=$HOME/ffmpeg/lib
+        make -j$(nproc) fate-hls-discontinuity fate-hls-discontinuity-seek || {
+          cat tests/data/fate/hls-discontinuity*.err tests/data/fate/hls-discontinuity*.diff 2>/dev/null
+          exit 1
+        }
+
     - name: Build exteplayer3
       run: |
         ./autogen.sh
