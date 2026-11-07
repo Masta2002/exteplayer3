@@ -47,7 +47,7 @@ jobs:
       run: |
         cd ffsrc
         export LD_LIBRARY_PATH=$HOME/ffmpeg/lib
-        make -j$(nproc) fate-hls-discontinuity fate-hls-discontinuity-seek || {
+        make -j$(nproc) fate-hls-discontinuity fate-hls-discontinuity-seek fate-hls-discontinuity-notag-live || {
           cat tests/data/fate/hls-discontinuity*.err tests/data/fate/hls-discontinuity*.diff 2>/dev/null
           exit 1
         }

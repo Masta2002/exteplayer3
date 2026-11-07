@@ -85,12 +85,14 @@ id side data ("S=1, 1"), the timestamps are those of the original.
 fate-hls-discontinuity-notag-live reads a live playlist without the tag;
 its reference is the output of the demuxer without this patch.
 ---
- libavformat/hls.c                     | 501 +++++++++++++++++++++++++-
- tests/fate/hlsenc.mak                 |  37 ++
- tests/ref/fate/hls-discontinuity      |  16 +
- tests/ref/fate/hls-discontinuity-seek |  10 +
- 4 files changed, 547 insertions(+), 17 deletions(-)
+ libavformat/hls.c                           | 501 +++++++++++++++++++-
+ tests/fate/hlsenc.mak                       |  37 ++
+ tests/ref/fate/hls-discontinuity            |  16 +
+ tests/ref/fate/hls-discontinuity-notag-live |  21 +
+ tests/ref/fate/hls-discontinuity-seek       |  10 +
+ 5 files changed, 568 insertions(+), 17 deletions(-)
  create mode 100644 tests/ref/fate/hls-discontinuity
+ create mode 100644 tests/ref/fate/hls-discontinuity-notag-live
  create mode 100644 tests/ref/fate/hls-discontinuity-seek
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
@@ -905,6 +907,33 @@ index 0000000000..da9010c2a6
 +0,     108000,     126000,    18000,     2950, 0xab2b1b04
 +0,     126000,     144000,    18000,     2924, 0xe5f31831
 +0,     144000,     162000,    18000,     2896, 0xc8f114a0
+diff --git a/tests/ref/fate/hls-discontinuity-notag-live b/tests/ref/fate/hls-discontinuity-notag-live
+new file mode 100644
+index 0000000000..c210f65634
+--- /dev/null
++++ b/tests/ref/fate/hls-discontinuity-notag-live
+@@ -0,0 +1,21 @@
++#extradata 0:       22, 0x415b055a
++#tb 0: 1/90000
++#media_type 0: video
++#codec_id 0: mpeg2video
++#dimensions 0: 64x64
++#sar 0: 1/1
++0,     -18000,          0,    18000,     2748, 0x10c1f3a0
++0,          0,      18000,    18000,     2771, 0x421bee31
++0,      18000,      36000,    18000,     2950, 0xab2b1b04
++0,      36000,      54000,    18000,     2924, 0xe5f31831
++0,      54000,      72000,    18000,     2896, 0xc8f114a0
++0,      72000,      90000,    18000,     3144, 0xde588261
++0,      90000,     108000,    18000,     3049, 0xf5b653ab
++0,     108000,     126000,    18000,     2947, 0xe8f83bd8
++0,     126000,     144000,    18000,     3029, 0x65433fe6
++0,     144000,     162000,    18000,     2923, 0x7885ffc4
++0,     162000,     180000,    18000,     3036, 0x95c22af7
++0,     180000,     198000,    18000,     3030, 0x319d515d
++0,     198000,     216000,    18000,     2818, 0x9e4111de
++0,     216000,     234000,    18000,     2825, 0x751e1acd
++0,     234000,     252000,    18000,     2931, 0xacfa2f27
 diff --git a/tests/ref/fate/hls-discontinuity-seek b/tests/ref/fate/hls-discontinuity-seek
 new file mode 100644
 index 0000000000..99612a4e82
