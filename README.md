@@ -141,6 +141,7 @@ Status and track information go to stderr, one JSON object per line.
 |---|---|
 | `EP3_OUTPUT_PACING_MS=1500` | software playback clock for HiSilicon receivers whose picture and sound run too fast |
 | `EP3_PES_DTS=1` | write the DTS into the H.264 PES header (B frames) |
+| `EP3_H264_LEVEL41=1` / `=0` | force the H.264 SPS level limit of 4.1 on or off (default: on for MIPS, off for the others) |
 | `EP3_LIVE_SYNC=0`, `EP3_LIVE_SYNC_WATCH=0` | Dreambox: no audio hold for live TS |
 | `EP3_LIVE_SYNC_MARGIN=ms` | Dreambox: margin of the live TS audio hold (400) |
 

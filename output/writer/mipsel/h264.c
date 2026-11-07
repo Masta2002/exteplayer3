@@ -212,7 +212,34 @@ static int32_t UpdateExtraData(uint8_t **ppExtraData, uint32_t *pExtraDataSize, 
 
 #define AVCC_TMP_SIZE 2048
 
-/* Limit the level of a SPS to 4.1, as done before for the first SPS. */
+/* The SPS level limit of 4.1 is in exteplayer3 since v24 (2016), for the
+ * MIPS Broadcom decoders of that time. An ARM box decodes a level 4.2
+ * stream (1080p60) as it is, and with the lowered level the decoder plans
+ * with too small buffers: picture errors (seen on a Vu+ 4K). So MIPS keeps
+ * the limit, the others do not; EP3_H264_LEVEL41=1 or =0 forces it. */
+static int LimitSpsLevelWanted(void)
+{
+    static int wanted = -1;
+    if (wanted < 0)
+    {
+        const char *env = getenv("EP3_H264_LEVEL41");
+        if (env && env[0])
+        {
+            wanted = env[0] != '0';
+        }
+        else
+        {
+#if defined(__mips__)
+            wanted = 1;
+#else
+            wanted = 0;
+#endif
+        }
+    }
+    return wanted;
+}
+
+/* Limit the level of a SPS to 4.1 where wanted, see LimitSpsLevelWanted(). */
 static void LimitSpsLevel(unsigned char *sps, unsigned int len)
 {
     static const uint8_t profile_num[] = { 66, 77, 88, 100 };
@@ -227,7 +254,7 @@ static void LimitSpsLevel(unsigned char *sps, unsigned int len)
         if (sps[1] == profile_num[i])
         {
             uint8_t level_org = sps[3];
-            if (level_org > 0x29)
+            if (level_org > 0x29 && LimitSpsLevelWanted())
             {
                 h264_printf(10, "H264 %s profile@%d.%d patched down to 4.1!", profile_str[i], level_org / 10 , level_org % 10);
                 sps[3] = 0x29; // level 4.1
