@@ -33,7 +33,9 @@ timeline_time) and parse_playlist() moves the anchor along as segments
 expire; find_timestamp_in_playlist() counts from the anchor, so the
 timestamp selection of select_cur_seq_no() holds for live playlists too,
 and first_timestamp of a live playlist counts back to the window start as
-it does for EVENT playlists (9.0.2 already moves it along on reloads).
+it does for EVENT playlists (9.0.2 already moves it along on reloads),
+from the first segment of the region rather than cur_seq_no, which small
+segments move on before the first packet comes out.
 The offsets of the regions are kept per discontinuity sequence in
 HLSContext, shared by all playlists: renditions keep their relative
 timing, and a seek back into a known region or a playlist switched in
@@ -54,18 +56,19 @@ select by timestamp, the new live branch sits behind it. 0048: after the
 resync to the live edge the next segment open compares the discontinuity
 sequence and restarts the demuxer if the region changed. FATE tests
 fate-hls-discontinuity and fate-hls-discontinuity-seek as in the
-original.
+original, in the FATE_HLSENC_LAVFI list of 9.0.2 (the FATE_HLSENC list
+requires SAMPLES there, the tests need none).
 ---
- libavformat/hls.c                     | 353 ++++++++++++++++++++++++--
+ libavformat/hls.c                     | 357 +++++++++++++++++++++++---
  tests/fate/hlsenc.mak                 |  21 ++
  tests/ref/fate/hls-discontinuity      |  16 ++
  tests/ref/fate/hls-discontinuity-seek |  10 +
- 4 files changed, 372 insertions(+), 28 deletions(-)
+ 4 files changed, 375 insertions(+), 29 deletions(-)
  create mode 100644 tests/ref/fate/hls-discontinuity
  create mode 100644 tests/ref/fate/hls-discontinuity-seek
 
 diff --git a/libavformat/hls.c b/libavformat/hls.c
-index 1fe751abd4..87b0f25f0c 100644
+index 1fe751abd4..21790f0342 100644
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
 @@ -50,6 +50,9 @@
@@ -578,7 +581,7 @@ index 1fe751abd4..87b0f25f0c 100644
                      if (!avio_feof(&pls->pb.pub) && ret != AVERROR_EOF)
                          return ret;
                      break;
-@@ -2797,14 +3031,66 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -2797,14 +3031,68 @@ static int hls_read_packet(AVFormatContext *s, AVPacket *pkt)
                          fill_timing_for_id3_timestamped_stream(pls);
                      }
  
@@ -621,15 +624,18 @@ index 1fe751abd4..87b0f25f0c 100644
 +
                      if (pls->ts_offset == AV_NOPTS_VALUE &&
                          pls->pkt->dts    != AV_NOPTS_VALUE) {
-                         int64_t seg_idx = pls->cur_seq_no - pls->start_seq_no;
+-                        int64_t seg_idx = pls->cur_seq_no - pls->start_seq_no;
++                        /* the first packet comes from the first segment of
++                         * the current region, cur_seq_no may be past it
++                         * already with small segments */
++                        int64_t seg_idx = pls->discontinuity_start_seq_no - pls->start_seq_no;
                          int64_t ts = av_rescale_q(pls->pkt->dts,
                              get_timebase(pls), AV_TIME_BASE_Q);
  
 -                        /* EVENT playlists preserve all segments from the start */
 -                        if (pls->type == PLS_TYPE_EVENT)
 +                        /* The first packet anchors the timeline of the
-+                         * playlist: it belongs to the first segment of the
-+                         * current discontinuity region. */
++                         * playlist. */
 +                        if (pls->timeline_time == AV_NOPTS_VALUE && !pls->is_subtitle) {
 +                            pls->timeline_seq_no = pls->discontinuity_start_seq_no;
 +                            pls->timeline_time   = ts;
@@ -647,7 +653,7 @@ index 1fe751abd4..87b0f25f0c 100644
                              for (int64_t k = 0; k < seg_idx && k < pls->n_segments; k++)
                                  ts -= pls->segments[k]->duration;
  
-@@ -3014,6 +3300,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3014,6 +3302,7 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          /* Reset reading */
          struct playlist *pls = c->playlists[i];
          AVIOContext *const pb = &pls->pb.pub;
@@ -655,7 +661,7 @@ index 1fe751abd4..87b0f25f0c 100644
          ff_format_io_close(pls->parent, &pls->input);
          pls->input_read_done = 0;
          pls->input_reuse = 0;
-@@ -3059,6 +3346,16 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
+@@ -3059,6 +3348,16 @@ static int hls_read_seek(AVFormatContext *s, int stream_index,
          }
  
          pls->last_seq_no = pls->cur_seq_no;
@@ -673,7 +679,7 @@ index 1fe751abd4..87b0f25f0c 100644
  
      c->cur_timestamp = seek_timestamp;
 diff --git a/tests/fate/hlsenc.mak b/tests/fate/hlsenc.mak
-index cd6cd60365..2d340b2e38 100644
+index cd6cd60365..9483357eb2 100644
 --- a/tests/fate/hlsenc.mak
 +++ b/tests/fate/hlsenc.mak
 @@ -100,6 +100,27 @@ FATE_HLSENC-$(call FILTERDEMDECENCMUX, AEVALSRC ARESAMPLE, HLS MPEGTS, MP2 PCM_F
@@ -693,11 +699,11 @@ index cd6cd60365..2d340b2e38 100644
 +	'#EXTINF:1.0,' 'hls_discontinuity_0.ts' '#EXT-X-DISCONTINUITY' \
 +	'#EXTINF:1.0,' 'hls_discontinuity_1.ts' '#EXT-X-ENDLIST' > $(TARGET_PATH)/$@
 +
-+FATE_HLSENC-$(call ALLYES, HLS_DEMUXER MPEGTS_MUXER MPEGTS_DEMUXER TESTSRC2_FILTER LAVFI_INDEV MPEG2VIDEO_ENCODER) += fate-hls-discontinuity
++FATE_HLSENC_LAVFI-$(call ALLYES, HLS_DEMUXER MPEGTS_MUXER MPEGTS_DEMUXER TESTSRC2_FILTER LAVFI_INDEV MPEG2VIDEO_ENCODER FILE_PROTOCOL) += fate-hls-discontinuity
 +fate-hls-discontinuity: tests/data/hls_discontinuity.m3u8
 +fate-hls-discontinuity: CMD = framecrc -flags +bitexact -i $(TARGET_PATH)/tests/data/hls_discontinuity.m3u8 -c copy
 +
-+FATE_HLSENC-$(call ALLYES, HLS_DEMUXER MPEGTS_MUXER MPEGTS_DEMUXER TESTSRC2_FILTER LAVFI_INDEV MPEG2VIDEO_ENCODER) += fate-hls-discontinuity-seek
++FATE_HLSENC_LAVFI-$(call ALLYES, HLS_DEMUXER MPEGTS_MUXER MPEGTS_DEMUXER TESTSRC2_FILTER LAVFI_INDEV MPEG2VIDEO_ENCODER FILE_PROTOCOL) += fate-hls-discontinuity-seek
 +fate-hls-discontinuity-seek: tests/data/hls_discontinuity.m3u8
 +fate-hls-discontinuity-seek: CMD = framecrc -flags +bitexact -ss 1.2 -i $(TARGET_PATH)/tests/data/hls_discontinuity.m3u8 -t 0.4 -c copy
 +
