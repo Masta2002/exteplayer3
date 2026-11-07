@@ -57,7 +57,9 @@ resync to the live edge the next segment open compares the discontinuity
 sequence and restarts the demuxer if the region changed. FATE tests
 fate-hls-discontinuity and fate-hls-discontinuity-seek as in the
 original, in the FATE_HLSENC_LAVFI list of 9.0.2 (the FATE_HLSENC list
-requires SAMPLES there, the tests need none).
+requires SAMPLES there, the tests need none); the reference files are
+regenerated with 9.0.2, whose framecrc no longer prints the mpegts
+stream id side data ("S=1, 1"), the timestamps are those of the original.
 ---
  libavformat/hls.c                     | 357 +++++++++++++++++++++++---
  tests/fate/hlsenc.mak                 |  21 ++
@@ -712,7 +714,7 @@ index cd6cd60365..9483357eb2 100644
  	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
 diff --git a/tests/ref/fate/hls-discontinuity b/tests/ref/fate/hls-discontinuity
 new file mode 100644
-index 0000000000..110dc17653
+index 0000000000..da9010c2a6
 --- /dev/null
 +++ b/tests/ref/fate/hls-discontinuity
 @@ -0,0 +1,16 @@
@@ -722,19 +724,19 @@ index 0000000000..110dc17653
 +#codec_id 0: mpeg2video
 +#dimensions 0: 64x64
 +#sar 0: 1/1
-+0,     -18000,          0,    18000,     2748, 0x10c1f3a0, S=1,        1
-+0,          0,      18000,    18000,     2771, 0x421bee31, S=1,        1
-+0,      18000,      36000,    18000,     2950, 0xab2b1b04, S=1,        1
-+0,      36000,      54000,    18000,     2924, 0xe5f31831, S=1,        1
-+0,      54000,      72000,    18000,     2896, 0xc8f114a0, S=1,        1
-+0,      72000,      90000,    18000,     2748, 0x10c1f3a0, S=1,        1
-+0,      90000,     108000,    18000,     2771, 0x421bee31, S=1,        1
-+0,     108000,     126000,    18000,     2950, 0xab2b1b04, S=1,        1
-+0,     126000,     144000,    18000,     2924, 0xe5f31831, S=1,        1
++0,     -18000,          0,    18000,     2748, 0x10c1f3a0
++0,          0,      18000,    18000,     2771, 0x421bee31
++0,      18000,      36000,    18000,     2950, 0xab2b1b04
++0,      36000,      54000,    18000,     2924, 0xe5f31831
++0,      54000,      72000,    18000,     2896, 0xc8f114a0
++0,      72000,      90000,    18000,     2748, 0x10c1f3a0
++0,      90000,     108000,    18000,     2771, 0x421bee31
++0,     108000,     126000,    18000,     2950, 0xab2b1b04
++0,     126000,     144000,    18000,     2924, 0xe5f31831
 +0,     144000,     162000,    18000,     2896, 0xc8f114a0
 diff --git a/tests/ref/fate/hls-discontinuity-seek b/tests/ref/fate/hls-discontinuity-seek
 new file mode 100644
-index 0000000000..d1176d6db4
+index 0000000000..99612a4e82
 --- /dev/null
 +++ b/tests/ref/fate/hls-discontinuity-seek
 @@ -0,0 +1,10 @@
@@ -744,7 +746,7 @@ index 0000000000..d1176d6db4
 +#codec_id 0: mpeg2video
 +#dimensions 0: 64x64
 +#sar 0: 1/1
-+0,     -36000,     -18000,    18000,     2748, 0x10c1f3a0, S=1,        1
-+0,     -18000,          0,    18000,     2771, 0x421bee31, S=1,        1
-+0,          0,      18000,    18000,     2950, 0xab2b1b04, S=1,        1
-+0,      18000,      36000,    18000,     2924, 0xe5f31831, S=1,        1
++0,     -36000,     -18000,    18000,     2748, 0x10c1f3a0
++0,     -18000,          0,    18000,     2771, 0x421bee31
++0,          0,      18000,    18000,     2950, 0xab2b1b04
++0,      18000,      36000,    18000,     2924, 0xe5f31831
