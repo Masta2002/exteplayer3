@@ -138,9 +138,14 @@ jobs:
           echo '</MPD>'
         } > sf/a.mpd
         cat sf/a.mpd
-        for m in hls/master.m3u8 tl/a.mpd dur/a.mpd sf/a.mpd; do
-          $FP -v error -show_entries stream=index,codec_type -of csv=p=0 $m
-          ../track_switch $m 6 near 0.5
+        for n in hls tl dur sf; do
+          cd $n; f=a.mpd; if [ $n = hls ]; then f=master.m3u8; fi
+          $FP -v error -show_entries stream=index,codec_type -of csv=p=0 $f || {
+            $FP -v debug $f 2>&1 | tail -80
+            exit 1
+          }
+          ../../track_switch $f 6 near 0.5
+          cd ..
         done
 
     # The patches 0050, 0051 and 0052 must not change anything for a caller
@@ -155,6 +160,7 @@ jobs:
       run: |
         set -eux
         cd ffsrc
+        FFS=$PWD
         awk '/^diff --git /{p = ($0 ~ /^diff --git a\/libavformat\/hls\.c /)} p' \
             ../ffmpeg-patches/0050-*.patch > ../hls0050.diff
         test -s ../hls0050.diff
@@ -196,22 +202,23 @@ jobs:
         for lib in REF NEW; do
           export LD_LIBRARY_PATH=${!lib}
           for n in hls tl dur sf; do
-            m=../sw/$n/a.mpd
-            if [ $n = hls ]; then m=../sw/hls/master.m3u8; fi
-            ./ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0 \
-                -c copy -fflags +bitexact -f framecrc - > ../sw_${n}_all_$lib.txt
-            ./ffmpeg -nostdin -v error -flags +bitexact -ss 7.3 -i $m -map 0 \
-                -t 4 -c copy -fflags +bitexact -f framecrc - > ../sw_${n}_seek_$lib.txt
-            ./ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0:a:1 \
-                -c copy -fflags +bitexact -f framecrc - > ../sw_${n}_one_$lib.txt
+            cd ../sw/$n
+            m=a.mpd; if [ $n = hls ]; then m=master.m3u8; fi
+            $FFS/ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0 \
+                -c copy -fflags +bitexact -f framecrc - > $FFS/../sw_${n}_all_$lib.txt
+            $FFS/ffmpeg -nostdin -v error -flags +bitexact -ss 7.3 -i $m -map 0 \
+                -t 4 -c copy -fflags +bitexact -f framecrc - > $FFS/../sw_${n}_seek_$lib.txt
+            $FFS/ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0:a:1 \
+                -c copy -fflags +bitexact -f framecrc - > $FFS/../sw_${n}_one_$lib.txt
+            cd $FFS
           done
         done
         # without the patches the track that is switched in does not arrive
         # (HLS) or not at the playing position (DASH)
         export LD_LIBRARY_PATH=$REF
-        (cd ../sw && ../track_switch hls/master.m3u8 6 none 0.5)
+        (cd ../sw/hls && ../../track_switch master.m3u8 6 none 0.5)
         for n in tl dur sf; do
-          (cd ../sw && ../track_switch $n/a.mpd 6 far 0.5)
+          (cd ../sw/$n && ../../track_switch a.mpd 6 far 0.5)
         done
         unset LD_LIBRARY_PATH
         for t in vod vodseek liveedge; do
