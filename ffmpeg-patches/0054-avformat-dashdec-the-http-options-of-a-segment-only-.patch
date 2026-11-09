@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Masta2002 <Masta2002@gmx.net>
+Date: Mon, 9 Nov 2026 22:21:09 +0100
+Subject: [PATCH 54/54] avformat/dashdec: the http options of a segment only
+ for http urls
+
+open_input() sets seekable, reconnect and multiple_requests for every
+segment. They are meant for the http protocol, but the file protocol has
+a seekable option as well, which takes -1 and 0 only. A representation
+that is one single file (BaseURL without segment list or template) is
+opened with seekable=1 since "dashdec: improved handling manifests with
+one segment", and a byte range segment since "avformat/dashdec: explicit
+http options for byte range segments". For a local manifest the file
+protocol rejects that value, the segment could not be opened and the
+manifest not be played at all, which works in FFmpeg 9.0.2.
+
+The options are now only set when open_url() reaches the segment through
+http(s), also below crypto. A local file is opened with the defaults of
+the file protocol. offset and end_offset are passed as before; the file
+protocol does not know them, so byte range segments of a local file are
+still not supported, as in FFmpeg 9.0.2.
+---
+ libavformat/dashdec.c | 25 +++++++++++++++++++++++--
+ 1 file changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
+index 03b3a796f8..7350e74094 100644
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -216,6 +216,19 @@ static int ishttp(char *url)
+     return proto_name && av_strstart(proto_name, "http", NULL);
+ }
+ 
++/* 1 if open_url() reaches the url through http(s), also below crypto */
++static int segment_is_http(const char *url)
++{
++    const char *proto_name = NULL;
++
++    if (av_strstart(url, "crypto", NULL) && (url[6] == '+' || url[6] == ':'))
++        proto_name = avio_find_protocol_name(url + 7);
++    if (!proto_name)
++        proto_name = avio_find_protocol_name(url);
++
++    return proto_name && av_strstart(proto_name, "http", NULL);
++}
++
+ static int aligned(int val)
+ {
+     return ((val + 0x3F) >> 6) << 6;
+@@ -2185,7 +2198,16 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+         av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
+     }
+ 
+-    if( pls->type == AVMEDIA_TYPE_SUBTITLE )
++    ff_make_absolute_url(url, c->max_url_size, c->base_url, seg->url);
++
++    if (!segment_is_http(url))
++    {
++        /* the options below are http options. The file protocol has
++         * a seekable option of its own, which only takes -1 and 0: with
++         * seekable=1 a local file could not be opened at all. A local file
++         * is opened with the defaults, as in FFmpeg without these patches. */
++    }
++    else if( pls->type == AVMEDIA_TYPE_SUBTITLE )
+     {
+         /* disable seeking for subtitles - subtitles are small and many servers doesn't support byterange for subtitles */
+         av_dict_set(&opts, "seekable", "0", 0);
+@@ -2205,7 +2227,6 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+         av_dict_set(&opts, "multiple_requests", "1", 0);
+     }
+ 
+-    ff_make_absolute_url(url, c->max_url_size, c->base_url, seg->url);
+     av_log(pls->parent, AV_LOG_VERBOSE, "DASH request for url '%s', offset %"PRId64"\n",
+            url, seg->url_offset);
+     ret = open_url(pls->parent, &pls->input, url, &c->avio_opts, opts, NULL);

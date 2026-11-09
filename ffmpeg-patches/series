@@ -47,3 +47,5 @@ ffmpeg_ac4.patch
 0050-hls-added-support-for-EXT-X-DISCONTINUITY.patch
 0051-avformat-hls-recheck-the-discard-flags-during-playba.patch
 0052-avformat-dashdec-align-a-representation-switched-in-.patch
+0053-fftools-ffmpeg-stream-specifiers-can-select-streams-.patch
+0054-avformat-dashdec-the-http-options-of-a-segment-only-.patch

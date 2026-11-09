@@ -53,6 +53,34 @@ jobs:
           exit 1
         }
 
+    # Patch 0053: the tests generate their input with lavfi and need no
+    # samples. The build above is not restricted (no --disable-everything),
+    # the components the tests depend on are checked so that none of the
+    # tests is silently left out.
+    - name: FATE tests of the codec name in stream specifiers (patch 0053)
+      run: |
+        set -eux
+        cd ffsrc
+        export LD_LIBRARY_PATH=$HOME/ffmpeg/lib
+        for c in LAVFI_INDEV SINE_FILTER ANULL_FILTER PCM_S16LE_ENCODER PCM_S16LE_DECODER \
+                 PCM_ALAW_ENCODER PCM_ALAW_DECODER PCM_MULAW_ENCODER PCM_MULAW_DECODER \
+                 NUT_MUXER NUT_DEMUXER NULL_MUXER FILE_PROTOCOL; do
+          grep -qx "#define CONFIG_$c 1" config_components.h
+        done
+        grep -qx '#define CONFIG_FFPROBE 1' config.h
+        make fate-list | grep '^fate-ffmpeg-spec-codec' | tee ../spec_tests.txt
+        test "$(grep -c . ../spec_tests.txt)" = 6
+        show() {
+          for t in "" -index -compat -map -filter -type; do
+            for e in "" .err .diff; do
+              f=tests/data/fate/ffmpeg-spec-codec$t$e
+              if [ -s $f ]; then echo "== $f"; cat $f; fi
+            done
+          done
+        }
+        make -j$(nproc) fate-ffmpeg-spec-codec-all KEEP=1 || { show; exit 1; }
+        show
+
     - name: Build exteplayer3
       run: |
         ./autogen.sh
@@ -110,7 +138,7 @@ jobs:
         FF=$HOME/ffmpeg/bin/ffmpeg; FP=$HOME/ffmpeg/bin/ffprobe
         gcc -O1 -Wall -Werror -o track_switch .github/ffmpeg9-tests/track_switch.c \
             $(PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig pkg-config --cflags --libs libavformat libavcodec libavutil) -lm
-        mkdir -p sw/hls sw/tl sw/dur sw/sf && cd sw
+        mkdir -p sw/hls sw/tl sw/dur sw/sf sw/sfm && cd sw
         A="-f lavfi -i sine=f=440:d=30 -f lavfi -i sine=f=880:d=30"
         $FF -v error -f lavfi -i testsrc=d=30:s=160x90:r=25 $A -map 0:v -map 1:a -map 2:a \
             -c:v libx264 -g 25 -c:a aac -b:a 64k -f hls -hls_time 2 -hls_playlist_type vod \
@@ -138,7 +166,14 @@ jobs:
           echo '</MPD>'
         } > sf/a.mpd
         cat sf/a.mpd
-        for n in hls tl dur; do
+        # the single file of the dash muxer: a SegmentList with byte ranges
+        $FF -v error $A -map 0:a -map 1:a -c:a aac -b:a 64k -f dash -single_file 1 \
+            -adaptation_sets "id=0,streams=0 id=1,streams=1" sfm/a.mpd
+        cat sfm/a.mpd
+        # sf: a local manifest whose representations are one file each needs
+        # patch 0054 (without it the segment is opened with the http option
+        # seekable=1, which the file protocol rejects)
+        for n in hls tl dur sf; do
           cd $n; f=a.mpd; if [ $n = hls ]; then f=master.m3u8; fi
           $FP -v error -show_entries stream=index,codec_type -of csv=p=0 $f || {
             $FP -v debug $f 2>&1 | tail -80
@@ -147,15 +182,131 @@ jobs:
           ../../track_switch $f 6 near 0.5
           cd ..
         done
-        # Single-file DASH only works over HTTP (the dash demuxer of this
-        # patch set opens a single file with the http option seekable=1,
-        # which the file protocol rejects). Not gating: a failure of this
-        # check is shown as a warning.
         python3 ../.github/ffmpeg9-tests/range_server.py 8089 &
         sleep 1
-        ../track_switch http://127.0.0.1:8089/sf/a.mpd 6 near 0.5 ||
-          echo "::warning::single-file DASH: the track switch check failed"
+        H=http://127.0.0.1:8089
+        # not gating: a failure of this check is shown as a warning
+        ../track_switch $H/sf/a.mpd 6 near 0.5 ||
+          echo "::warning::single-file DASH over HTTP: the track switch check failed"
+        # patch 0054: the local single files give the same packets as over
+        # HTTP, read through and with a seek
+        rd()   { $FF -nostdin -v error -flags +bitexact "$@" -map 0 -c copy -fflags +bitexact -f framecrc -; }
+        seek() { $FF -nostdin -v error -flags +bitexact -ss 7.3 "$@" -map 0 -t 4 -c copy -fflags +bitexact -f framecrc -; }
+        rd   -i sf/a.mpd    > sf_all_local.txt
+        seek -i sf/a.mpd    > sf_seek_local.txt
+        rd   -i $H/sf/a.mpd > sf_all_http.txt
+        seek -i $H/sf/a.mpd > sf_seek_http.txt
+        wc -l sf_all_local.txt sf_seek_local.txt
+        test "$(grep -vc '^#' sf_all_local.txt)" -gt 100
+        test "$(grep -vc '^#' sf_seek_local.txt)" -gt 100
+        diff -u sf_all_http.txt sf_all_local.txt
+        diff -u sf_seek_http.txt sf_seek_local.txt
+        # Byte range segments (the single file of the dash muxer): over HTTP
+        # they are requested with offset/end_offset. The file protocol has no
+        # such options, FFmpeg 9.0.2 does not support them for a local file
+        # either. Information only.
+        if rd -i $H/sfm/a.mpd > sfm_all_http.txt 2> sfm_http.err; then
+          echo "::notice::single file of the dash muxer over HTTP: $(grep -vc '^#' sfm_all_http.txt) packets"
+        else
+          tail -5 sfm_http.err
+          echo "::warning::single file of the dash muxer over HTTP: not readable"
+        fi
+        if rd -i sfm/a.mpd > sfm_all_local.txt 2> sfm_local.err && cmp -s sfm_all_http.txt sfm_all_local.txt; then
+          echo "::notice::single file of the dash muxer, local: the same packets as over HTTP"
+        else
+          tail -5 sfm_local.err
+          echo "::notice::single file of the dash muxer, local: $(grep -vc '^#' sfm_all_local.txt) packets, not the same as over HTTP (byte ranges of a local file are not supported)"
+        fi
         kill $! || true
+
+    # What FFmpeg 9.0.2 without any patch does with the local single-file
+    # manifests of the step above (demuxers only, built from the same
+    # tarball). Information only, nothing here is gating.
+    - name: Local single-file DASH in FFmpeg 9.0.2 without patches (information)
+      run: |
+        set +e -ux
+        mkdir ffvan && tar -xf ffsrc/ff.tar.xz --strip-components=1 -C ffvan
+        cd ffvan
+        ./configure --disable-everything --disable-autodetect --disable-doc --disable-ffplay --disable-ffprobe \
+          --enable-libxml2 --enable-demuxer=dash,mov --enable-protocol=file --enable-muxer=framecrc \
+          --enable-decoder=aac --enable-parser=aac > /dev/null &&
+        make -j$(nproc) ffmpeg > /dev/null || { echo "::warning::FFmpeg 9.0.2 without patches did not build"; exit 0; }
+        cd ../sw
+        for n in sf sfm; do
+          ../ffvan/ffmpeg -nostdin -v error -flags +bitexact -i $n/a.mpd -map 0 -c copy -fflags +bitexact \
+              -f framecrc - > ${n}_all_vanilla.txt 2> ${n}_vanilla.err
+          rc=$?
+          tail -5 ${n}_vanilla.err
+          same=differ
+          if cmp -s ${n}_all_vanilla.txt ${n}_all_local.txt; then same="are the same"; fi
+          diff -u ${n}_all_vanilla.txt ${n}_all_local.txt | head -40
+          echo "::notice::FFmpeg 9.0.2 without patches, local $n/a.mpd: exit $rc, $(grep -vc '^#' ${n}_all_vanilla.txt) packets, $(grep -c . ${n}_vanilla.err) lines of errors; the packets of the patched build $same"
+        done
+        exit 0
+
+    # Patch 0053 must not change what the ffmpeg tool does with the stream
+    # specifier forms that existed before: the build tree gets ffmpeg
+    # without 0053 (fftools only, the libraries are not touched), both run
+    # the same commands on a file with three audio streams (pcm_s16le eng,
+    # pcm_alaw deu, pcm_s16le fra) and must write the same file.
+    - name: ffmpeg with the old stream specifier forms unchanged by patch 0053
+      env:
+        LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
+      run: |
+        set -eux
+        NEW=$HOME/ffmpeg/bin/ffmpeg; FP=$HOME/ffmpeg/bin/ffprobe
+        cd ffsrc
+        patch -R -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0053-*.patch
+        test "$(grep -c stream_specifier_codec fftools/cmdutils.c || true)" = 0
+        make -j$(nproc) ffmpeg
+        cp ffmpeg ../ffmpeg_old
+        patch -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0053-*.patch
+        make -j$(nproc) ffmpeg
+        OLD=$PWD/../ffmpeg_old
+        mkdir ../spec && cd ../spec
+        $NEW -nostdin -v error -f lavfi -i sine=1000:d=0.5 -f lavfi -i sine=2000:d=0.5 -f lavfi -i sine=3000:d=0.5 \
+            -map 0 -map 1 -map 2 -c:a pcm_s16le -c:a:1 pcm_alaw \
+            -metadata:s:a:0 language=eng -metadata:s:a:1 language=deu -metadata:s:a:2 language=fra \
+            -disposition:a 0 -disposition:a:1 default -bitexact in.mkv
+        list() { $FP -v error -show_entries stream=index,codec_name:stream_disposition=default:stream_tags=language -of compact=p=0:nk=1 "$1"; }
+        list in.mkv
+        i=0
+        while IFS= read -r args; do
+          i=$((i+1))
+          for b in OLD NEW; do
+            ${!b} -nostdin -v error -i in.mkv $args -bitexact -y ${b}_$i.mkv
+            list ${b}_$i.mkv > ${b}_$i.txt
+          done
+          echo "== $i: $args"
+          cat NEW_$i.txt
+          diff -u OLD_$i.txt NEW_$i.txt
+          cmp OLD_$i.mkv NEW_$i.mkv
+        done <<'EOF'
+        -map 0 -c copy -c:a:1 pcm_mulaw
+        -map 0:a:1 -c copy
+        -map 0:a:m:language:fra -c copy
+        -map 0 -c copy -disposition:a:0 default
+        -map 0 -c copy -c:a:m:language:deu pcm_mulaw -metadata:s:a:2 title=x
+        -map 0:a -map -0:a:0 -c:a pcm_mulaw -c:a:0 copy
+        EOF
+        test $i = 6
+        # the commands select what they say
+        test "$(grep -c pcm_mulaw NEW_1.txt)" = 1
+        sed -n 2p NEW_1.txt | grep -q pcm_mulaw
+        test "$(grep -c . NEW_2.txt)" = 1
+        grep -q pcm_alaw NEW_2.txt
+        test "$(grep -c . NEW_3.txt)" = 1
+        grep -q fra NEW_3.txt
+        test "$(grep -c . NEW_4.txt)" = 3
+        sed -n 2p NEW_5.txt | grep -q pcm_mulaw
+        # and ffmpeg without the patch does not know the codec form
+        if $OLD -nostdin -v error -i in.mkv -map 0 -c copy -c:a:pcm_alaw pcm_mulaw -bitexact -y old_codec.mkv; then
+          echo "ffmpeg without patch 0053 accepted -c:a:pcm_alaw"; exit 1
+        fi
+        $NEW -nostdin -v error -i in.mkv -map 0 -c copy -c:a:pcm_alaw pcm_mulaw -bitexact -y new_codec.mkv
+        list new_codec.mkv | tee new_codec.txt
+        test "$(grep -c pcm_mulaw new_codec.txt)" = 1
+        sed -n 2p new_codec.txt | grep -q pcm_mulaw
 
     # The patches 0050, 0051 and 0052 must not change anything for a caller
     # that does not switch tracks (and 0050 nothing for HLS without

@@ -1,0 +1,352 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Masta2002 <Masta2002@gmx.net>
+Date: Mon, 9 Nov 2026 21:44:53 +0100
+Subject: [PATCH 53/53] fftools/ffmpeg: stream specifiers can select streams by
+ codec
+
+The stream type in a stream specifier of the ffmpeg tool may be followed
+by a codec name:
+
+    stream_type[:codec_name][:additional_stream_specifier]
+
+    ffmpeg -i IN -map 0 -c copy -c:a:aac libopus OUT
+
+encodes the AAC audio streams with libopus and copies everything else.
+a:aac:1 is the second AAC audio stream. For output streams mapped from an
+input stream the codec name refers to the input codec, also when the
+stream is reencoded. Output streams fed by a complex filtergraph have no
+input codec and are never matched by a codec name.
+
+Existing specifier forms keep their meaning: the token after the stream
+type is only taken as a codec name when it is the name of a codec
+descriptor of that media type. Tokens starting with a digit (index),
+single letters (stream types, p, g, i, m, u) and disp are never looked up,
+so a:1, a:#0x100, a:i:256, a:m:language:eng, v:disp:default, a:p:1 parse
+exactly as before, and a:h264 is rejected as before.
+
+Based on skyjet18/FFmpeg release/6.1-patched d7c69e96ce
+("avformat: added support for stream codec specifier type in -c argument").
+
+Port: in 6.1 the ffmpeg options were matched with libavformat's
+avformat_match_stream_specifier(), so the feature was added to the library.
+In 9.0.2 ffmpeg parses specifiers itself with stream_specifier_parse() /
+stream_specifier_match() in fftools/cmdutils.c, so the codec is parsed
+into StreamSpecifier.codec_id and matched there instead; this also covers
+-map, filtergraph input labels and per-stream AVOptions. The public
+library function is left unchanged, and so are ffprobe -select_streams and
+ffplay -ast/-vst/-sst, which use it: they do not know the codec form.
+
+As in the original, ost_add() stores the input codec id in the output
+AVStream while the output options are evaluated. Nothing reads the codec
+id of an output stream before of_stream_init() replaces the whole codecpar
+with the streamcopy/encoder/bsf parameters (avcodec_parameters_copy() in
+bsf_init()), and the header is only written once every stream of the file
+went through of_stream_init(), so the value never reaches the muxer or the
+output of a reencoded stream.
+
+Unlike the original, a codec name of another media type or a codec name
+starting with a digit is not consumed, and the library test is replaced by
+FATE tests of the ffmpeg tool which need no external samples.
+---
+ doc/ffmpeg.texi                         |  9 ++++
+ doc/fftools-common-opts.texi            | 27 ++++++++++--
+ fftools/cmdutils.c                      | 58 +++++++++++++++++++++++++
+ fftools/cmdutils.h                      |  4 ++
+ fftools/ffmpeg_mux_init.c               |  7 +++
+ tests/fate/ffmpeg.mak                   | 52 ++++++++++++++++++++++
+ tests/ref/fate/ffmpeg-spec-codec        |  3 ++
+ tests/ref/fate/ffmpeg-spec-codec-compat |  3 ++
+ tests/ref/fate/ffmpeg-spec-codec-filter |  2 +
+ tests/ref/fate/ffmpeg-spec-codec-index  |  3 ++
+ tests/ref/fate/ffmpeg-spec-codec-map    |  2 +
+ 11 files changed, 166 insertions(+), 4 deletions(-)
+ create mode 100644 tests/ref/fate/ffmpeg-spec-codec
+ create mode 100644 tests/ref/fate/ffmpeg-spec-codec-compat
+ create mode 100644 tests/ref/fate/ffmpeg-spec-codec-filter
+ create mode 100644 tests/ref/fate/ffmpeg-spec-codec-index
+ create mode 100644 tests/ref/fate/ffmpeg-spec-codec-map
+
+diff --git a/doc/ffmpeg.texi b/doc/ffmpeg.texi
+index 882503142e..22a615c859 100644
+--- a/doc/ffmpeg.texi
++++ b/doc/ffmpeg.texi
+@@ -822,6 +822,15 @@ ffmpeg -i INPUT -map 0 -c copy -c:v:1 libx264 -c:a:137 libvorbis OUTPUT
+ will copy all the streams except the second video, which will be encoded with
+ libx264, and the 138th audio, which will be encoded with libvorbis.
+ 
++A stream specifier may also select mapped streams by their input codec. For
++example
++@example
++ffmpeg -i INPUT -map 0 -c copy -c:a:aac libopus OUTPUT
++@end example
++will encode AAC audio streams with libopus and copy all other streams. The
++codec name is part of the stream specifier appended to @code{-c}; it is not the
++@var{codec} argument. See the @ref{Stream specifiers} chapter.
++
+ @item -t @var{duration} (@emph{input/output})
+ When used as an input option (before @code{-i}), limit the @var{duration} of
+ data read from the input file.
+diff --git a/doc/fftools-common-opts.texi b/doc/fftools-common-opts.texi
+index 7b5a11b634..7cabba0d0c 100644
+--- a/doc/fftools-common-opts.texi
++++ b/doc/fftools-common-opts.texi
+@@ -49,14 +49,33 @@ additional stream specifier (see below), then it selects stream number
+ order of the streams as detected by libavformat except when a stream group
+ specifier or program ID is also specified. In this case it is based on the
+ ordering of the streams in the group or program.
+-@item @var{stream_type}[:@var{additional_stream_specifier}]
++@item @var{stream_type}[:@var{codec_name}][:@var{additional_stream_specifier}]
+ @var{stream_type} is one of following: 'v' or 'V' for video, 'a' for audio, 's'
+ for subtitle, 'd' for data, and 't' for attachments. 'v' matches all video
+ streams, 'V' only matches video streams which are not attached pictures, video
+-thumbnails or cover arts. If @var{additional_stream_specifier} is used, then
+-it matches streams which both have this type and match the
++thumbnails or cover arts.
++
++@var{codec_name} is only available in @command{ffmpeg}, not in
++@command{ffprobe} and @command{ffplay}. If it is present, it must be the
++canonical name of a codec of this type (as printed by the @option{-codecs}
++option), such as @code{aac} or @code{h264}, and matches streams which have
++both the specified type and codec. For output streams mapped from an input
++stream the codec name refers to the input codec, also when the stream is
++reencoded. Output streams fed by a complex filtergraph have no input codec and
++are never matched by a codec name.
++
++If @var{additional_stream_specifier} is used, then it matches streams which
++have this type and codec, when specified, and also match the
+ @var{additional_stream_specifier}. Otherwise, it matches all streams of the
+-specified type.
++specified type and codec. For example, @code{a:aac} matches all AAC audio
++streams and @code{a:aac:1} matches the second AAC audio stream.
++
++In @command{ffmpeg}, a token following @var{stream_type} is only taken as
++@var{codec_name} when it is the name of a codec of that type; anything else is
++interpreted as an @var{additional_stream_specifier}, so that forms such as
++@code{a:1} or @code{a:m:language:eng} keep their meaning. Codec names starting
++with a digit (e.g. @code{4xm}) cannot be used, as a digit always starts a
++stream index.
+ @item g:@var{group_specifier}[:@var{additional_stream_specifier}]
+ Matches streams which are in the group with the specifier @var{group_specifier}.
+ if @var{additional_stream_specifier} is used, then it matches streams which both
+diff --git a/fftools/cmdutils.c b/fftools/cmdutils.c
+index 9fdd680448..32cdd12bfc 100644
+--- a/fftools/cmdutils.c
++++ b/fftools/cmdutils.c
+@@ -999,6 +999,54 @@ int cmdutils_isalnum(char c)
+            (c >= 'a' && c <= 'z');
+ }
+ 
++/**
++ * Check whether the stream type in a stream specifier is followed by a codec
++ * name, as in a:aac or v:h264:1.
++ *
++ * @param spec points right after the stream type letter
++ * @param type media type selected by the stream type letter
++ * @param codec_id set to the codec id when a codec name is found
++ *
++ * @return length of the ":codec_name" part, 0 when the next token is not the
++ *         name of a codec of the given type and is thus left to be parsed
++ *         as an additional stream specifier
++ */
++static size_t stream_specifier_codec(const char *spec, enum AVMediaType type,
++                                     enum AVCodecID *codec_id)
++{
++    const AVCodecDescriptor *desc;
++    char name[64];
++    size_t len;
++
++    if (*spec != ':')
++        return 0;
++    spec++;
++
++    for (len = 0; cmdutils_isalnum(spec[len]) ||
++                  spec[len] == '_' || spec[len] == '.'; len++)
++        continue;
++
++    /* Everything that already has a meaning in a stream specifier keeps it:
++     * - a leading digit starts a stream index
++     * - single letters are stream types or the p, g, i, m, u designators
++     * - disp: starts a disposition specifier */
++    if (len < 2 || len >= sizeof(name)   ||
++        (*spec >= '0' && *spec <= '9')   ||
++        (len == 4 && !strncmp(spec, "disp", 4)))
++        return 0;
++
++    memcpy(name, spec, len);
++    name[len] = 0;
++
++    desc = avcodec_descriptor_get_by_name(name);
++    if (!desc || desc->type != type)
++        return 0;
++
++    *codec_id = desc->id;
++
++    return len + 1;
++}
++
+ void stream_specifier_uninit(StreamSpecifier *ss)
+ {
+     av_freep(&ss->meta_key);
+@@ -1056,6 +1104,12 @@ int stream_specifier_parse(StreamSpecifier *ss, const char *spec,
+ 
+             av_log(logctx, AV_LOG_TRACE, "Parsed media type: %s; remainder: %s\n",
+                    av_get_media_type_string(ss->media_type), spec);
++
++            /* opt:[vasdtV]:codec_name */
++            spec += stream_specifier_codec(spec, ss->media_type, &ss->codec_id);
++            if (ss->codec_id != AV_CODEC_ID_NONE)
++                av_log(logctx, AV_LOG_TRACE, "Parsed codec: %s; remainder: %s\n",
++                       avcodec_get_name(ss->codec_id), spec);
+         } else if (*spec == 'g' && *(spec + 1) == ':') {
+             if (ss->stream_list != STREAM_LIST_ALL)
+                 goto multiple_stream_lists;
+@@ -1294,6 +1348,10 @@ unsigned stream_specifier_match(const StreamSpecifier *ss,
+              (ss->no_apic && (candidate->disposition & AV_DISPOSITION_ATTACHED_PIC))))
+             continue;
+ 
++        if (ss->codec_id != AV_CODEC_ID_NONE &&
++            ss->codec_id != candidate->codecpar->codec_id)
++            continue;
++
+         if (ss->meta_key) {
+             const AVDictionaryEntry *tag = av_dict_get(candidate->metadata,
+                                                        ss->meta_key, NULL, 0);
+diff --git a/fftools/cmdutils.h b/fftools/cmdutils.h
+index 85b468f2af..b0b623e355 100644
+--- a/fftools/cmdutils.h
++++ b/fftools/cmdutils.h
+@@ -128,6 +128,10 @@ typedef struct StreamSpecifier {
+     enum AVMediaType     media_type;
+     uint8_t              no_apic;
+ 
++    // when not AV_CODEC_ID_NONE, consider only streams with this codec;
++    // only ever set together with media_type
++    enum AVCodecID       codec_id;
++
+     uint8_t              usable_only;
+ 
+     int                  disposition;
+diff --git a/fftools/ffmpeg_mux_init.c b/fftools/ffmpeg_mux_init.c
+index e4bbaa44be..09e4f27c17 100644
+--- a/fftools/ffmpeg_mux_init.c
++++ b/fftools/ffmpeg_mux_init.c
+@@ -1202,6 +1202,13 @@ static int ost_add(Muxer *mux, const OptionsContext *o, enum AVMediaType type,
+     ost->kf.ref_pts = AV_NOPTS_VALUE;
+     ms->par_in->codec_type   = type;
+     st->codecpar->codec_type = type;
++    /* Lets stream specifiers with a codec name (-c:a:aac ...) match mapped
++     * streams by their input codec while the output options are evaluated.
++     * This is not an output parameter: of_stream_init() replaces the whole
++     * codecpar with the streamcopy/encoder/bsf parameters before the header
++     * is written. */
++    if (ist)
++        st->codecpar->codec_id = ist->par->codec_id;
+ 
+     if (ost->type == AVMEDIA_TYPE_VIDEO) {
+         if (ost->ist)
+diff --git a/tests/fate/ffmpeg.mak b/tests/fate/ffmpeg.mak
+index e1a43df169..d30e01c914 100644
+--- a/tests/fate/ffmpeg.mak
++++ b/tests/fate/ffmpeg.mak
+@@ -292,6 +292,58 @@ FATE_FFMPEG-$(call ENCDEC2, MPEG2VIDEO, FFV1, NUT, HSTACK_FILTER PIPE_PROTOCOL F
+ fate-ffmpeg-spec-disposition: CMD = framecrc -i $(TARGET_SAMPLES)/mpegts/pmtchange.ts -map '0:disp:visual_impaired+descriptions:1' -c copy
+ FATE_SAMPLES_FFMPEG-$(call FRAMECRC, MPEGTS,,) += fate-ffmpeg-spec-disposition
+ 
++# test matching by codec name
++# audio streams of the test file: 0 pcm_s16le, 1 pcm_alaw, 2 pcm_s16le
++tests/data/spec-codec.nut: TAG = GEN
++tests/data/spec-codec.nut: ffmpeg$(PROGSSUF)$(EXESUF) | tests/data
++	$(M)$(TARGET_EXEC) $(TARGET_PATH)/$< -nostdin \
++        -f lavfi -i "sine=1000:d=0.1" -f lavfi -i "sine=2000:d=0.1" -f lavfi -i "sine=3000:d=0.1" \
++        -map 0 -map 1 -map 2 -c:a pcm_s16le -c:a:1 pcm_alaw -bitexact \
++        -y $(TARGET_PATH)/tests/data/spec-codec.nut 2>/dev/null
++
++SPEC_CODEC_FILE   = $(TARGET_PATH)/tests/data/spec-codec.nut
++SPEC_CODEC_FFMPEG = $(FFMPEG) -nostdin -hide_banner -loglevel error -i $(SPEC_CODEC_FILE)
++SPEC_CODEC_PROBE  = ffprobe$(PROGSSUF)$(EXESUF) -bitexact -show_entries stream=index,codec_name -of compact=p=0:nk=1
++SPEC_CODEC_DEPS   = LAVFI_INDEV SINE_FILTER PCM_S16LE_DECODER PCM_S16LE_ENCODER \
++                    PCM_ALAW_DECODER PCM_ALAW_ENCODER PCM_MULAW_ENCODER         \
++                    NUT_MUXER NUT_DEMUXER FILE_PROTOCOL
++
++# only the pcm_alaw stream is reencoded
++fate-ffmpeg-spec-codec: CMD = run_with_temp \
++    "$(SPEC_CODEC_FFMPEG) -map 0 -c copy -c:a:pcm_alaw pcm_mulaw -bitexact -f nut -y" \
++    "$(SPEC_CODEC_PROBE)" nut
++# the index counts the streams with the given codec
++fate-ffmpeg-spec-codec-index: CMD = run_with_temp \
++    "$(SPEC_CODEC_FFMPEG) -map 0 -c copy -c:a:pcm_s16le:1 pcm_mulaw -bitexact -f nut -y" \
++    "$(SPEC_CODEC_PROBE)" nut
++# an index directly after the stream type still counts all streams of the type
++fate-ffmpeg-spec-codec-compat: CMD = run_with_temp \
++    "$(SPEC_CODEC_FFMPEG) -map 0 -c copy -c:a:1 pcm_mulaw -bitexact -f nut -y" \
++    "$(SPEC_CODEC_PROBE)" nut
++# input streams are selected by codec in -map
++fate-ffmpeg-spec-codec-map: CMD = run_with_temp \
++    "$(SPEC_CODEC_FFMPEG) -map 0:a:pcm_s16le -c copy -bitexact -f nut -y" \
++    "$(SPEC_CODEC_PROBE)" nut
++# filtergraph inputs are selected by codec, an output stream fed by
++# a filtergraph has no input codec and is not matched by a codec name
++fate-ffmpeg-spec-codec-filter: CMD = run_with_temp \
++    "$(SPEC_CODEC_FFMPEG) -filter_complex [0:a:pcm_alaw]anull[f] -map [f] -map 0:a:pcm_s16le:1 -c:a pcm_s16le -c:a:pcm_s16le pcm_mulaw -bitexact -f nut -y" \
++    "$(SPEC_CODEC_PROBE)" nut
++# a codec of another type is not a codec name in the specifier, as before
++# the specifier is then invalid
++fate-ffmpeg-spec-codec-type: CMD = ffmpeg -i $(SPEC_CODEC_FILE) -map 0 -c copy -c:a:h264 pcm_mulaw -f null -; test $$? -ne 0
++fate-ffmpeg-spec-codec-type: CMP = null
++
++FATE_SPEC_CODEC-$(call ALLYES, $(SPEC_CODEC_DEPS))              += fate-ffmpeg-spec-codec        \
++                                                                   fate-ffmpeg-spec-codec-index  \
++                                                                   fate-ffmpeg-spec-codec-compat \
++                                                                   fate-ffmpeg-spec-codec-map
++FATE_SPEC_CODEC-$(call ALLYES, $(SPEC_CODEC_DEPS) ANULL_FILTER) += fate-ffmpeg-spec-codec-filter
++FATE_SPEC_CODEC-$(call ALLYES, $(SPEC_CODEC_DEPS) NULL_MUXER)   += fate-ffmpeg-spec-codec-type
++$(FATE_SPEC_CODEC-yes): tests/data/spec-codec.nut
++FATE_FFMPEG_FFPROBE += $(FATE_SPEC_CODEC-yes)
++fate-ffmpeg-spec-codec-all: $(FATE_SPEC_CODEC-yes)
++
+ # test heif image merging using internally defined filtegraphs
+ # picking the stream group if not mapping any specific stream
+ fate-ffmpeg-heif-merge: CMD = framecrc -i $(TARGET_SAMPLES)/heif-conformance/C007.heic
+diff --git a/tests/ref/fate/ffmpeg-spec-codec b/tests/ref/fate/ffmpeg-spec-codec
+new file mode 100644
+index 0000000000..7729dd63d4
+--- /dev/null
++++ b/tests/ref/fate/ffmpeg-spec-codec
+@@ -0,0 +1,3 @@
++0|pcm_s16le
++1|pcm_mulaw
++2|pcm_s16le
+diff --git a/tests/ref/fate/ffmpeg-spec-codec-compat b/tests/ref/fate/ffmpeg-spec-codec-compat
+new file mode 100644
+index 0000000000..7729dd63d4
+--- /dev/null
++++ b/tests/ref/fate/ffmpeg-spec-codec-compat
+@@ -0,0 +1,3 @@
++0|pcm_s16le
++1|pcm_mulaw
++2|pcm_s16le
+diff --git a/tests/ref/fate/ffmpeg-spec-codec-filter b/tests/ref/fate/ffmpeg-spec-codec-filter
+new file mode 100644
+index 0000000000..747918f1e3
+--- /dev/null
++++ b/tests/ref/fate/ffmpeg-spec-codec-filter
+@@ -0,0 +1,2 @@
++0|pcm_s16le
++1|pcm_mulaw
+diff --git a/tests/ref/fate/ffmpeg-spec-codec-index b/tests/ref/fate/ffmpeg-spec-codec-index
+new file mode 100644
+index 0000000000..b711af6ce3
+--- /dev/null
++++ b/tests/ref/fate/ffmpeg-spec-codec-index
+@@ -0,0 +1,3 @@
++0|pcm_s16le
++1|pcm_alaw
++2|pcm_mulaw
+diff --git a/tests/ref/fate/ffmpeg-spec-codec-map b/tests/ref/fate/ffmpeg-spec-codec-map
+new file mode 100644
+index 0000000000..98a0768efc
+--- /dev/null
++++ b/tests/ref/fate/ffmpeg-spec-codec-map
+@@ -0,0 +1,2 @@
++0|pcm_s16le
++1|pcm_s16le
