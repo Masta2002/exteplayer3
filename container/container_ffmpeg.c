@@ -360,6 +360,8 @@ static uint32_t readStallLimitMs = 60000;
 
 /* the demuxer returned a real EOF, not only an error */
 static uint8_t readEofReached = 0;
+/* start of a row of read errors of a http stream, 0 = none (FFmpeg thread only) */
+static int64_t readErrorSince[IPTV_AV_CONTEXT_MAX_NUM] = {0};
 
 #include "buff_ffmpeg.c"
 #include "wrapped_ffmpeg.c"
@@ -2608,6 +2610,7 @@ static void FFMPEGThread(Context_t *context)
             do_seek_target_seconds = false;
             do_seek_target_bytes = false;
             readEofReached = 0;
+            memset(readErrorSince, 0, sizeof(readErrorSince));
             OutputPacingReset();
 
             restart_audio_resampling = 1;
@@ -2753,6 +2756,7 @@ static void FFMPEGThread(Context_t *context)
             ffmpeg_printf(200, "Ctx %d PTS: %"PRId64" PTS[1] %"PRId64"\n", cAVIdx, multiContextLastPts[cAVIdx], multiContextLastPts[1]);
 
             reset_finish_timeout();
+            readErrorSince[cAVIdx] = 0;
             if(avContextTab[cAVIdx]->streams[packet.stream_index]->discard != AVDISCARD_ALL)
             {
                 if (context->manager->video->Command(context, MANAGER_GET_TRACK, &videoTrack) < 0)
@@ -3517,6 +3521,41 @@ static void FFMPEGThread(Context_t *context)
         }
         else
         {
+            /* A read error of a http stream that is no end of file and no
+             * abort: read again for up to 10 s, a short network outage then
+             * goes on instead of ending when the buffer is empty. The finish
+             * timeout runs meanwhile, so this adds no second wait. */
+            if (!isWaitingForFinish && ffmpegStatus < 0 && ffmpegStatus != AVERROR_EOF &&
+                ffmpegStatus != AVERROR_EXIT && ffmpegStatus != AVERROR(EAGAIN) &&
+                !PlaybackDieNow(0) && !context->playback->isTSLiveMode &&
+                avContextTab[cAVIdx]->url &&
+                (!strncmp(avContextTab[cAVIdx]->url, "http://", 7) ||
+                 !strncmp(avContextTab[cAVIdx]->url, "https://", 8)))
+            {
+                int64_t now = av_gettime_relative();
+                if (!readErrorSince[cAVIdx])
+                {
+                    static char errbuf[256];
+                    readErrorSince[cAVIdx] = now;
+                    if (0 == av_strerror(ffmpegStatus, errbuf, sizeof(errbuf)))
+                    {
+                        printf("{\"log\":\"Frame read error: '%s', reading again for up to 10 s\"}\n", errbuf);
+                    }
+                }
+                if (now - readErrorSince[cAVIdx] < 10 * (int64_t)AV_TIME_BASE)
+                {
+                    if (avContextTab[cAVIdx]->pb)
+                    {
+                        avContextTab[cAVIdx]->pb->eof_reached = 0;
+                        avContextTab[cAVIdx]->pb->error = 0;
+                    }
+                    update_finish_timeout();
+                    releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+                    usleep(100000);
+                    continue;
+                }
+            }
+
             if( 0 != ffmpegStatus )
             {
                 static char errbuf[256];
@@ -3614,9 +3653,10 @@ static void FFMPEGThread(Context_t *context)
     mpeg4p2_context_close(mpeg4p2_context);
 #endif
 
-    hasPlayThreadStarted = 0;
     context->playback->isPlaying = 0;
     PlaybackDieNow(1);
+    /* last: container_ffmpeg_stop() waits for this flag before it frees */
+    hasPlayThreadStarted = 0;
     ffmpeg_printf(10, "terminating\n");
 }
 
