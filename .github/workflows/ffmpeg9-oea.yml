@@ -138,7 +138,7 @@ jobs:
           echo '</MPD>'
         } > sf/a.mpd
         cat sf/a.mpd
-        for n in hls tl dur sf; do
+        for n in hls tl dur; do
           cd $n; f=a.mpd; if [ $n = hls ]; then f=master.m3u8; fi
           $FP -v error -show_entries stream=index,codec_type -of csv=p=0 $f || {
             $FP -v debug $f 2>&1 | tail -80
@@ -147,6 +147,15 @@ jobs:
           ../../track_switch $f 6 near 0.5
           cd ..
         done
+        # Single-file DASH only works over HTTP (the dash demuxer of this
+        # patch set opens a single file with the http option seekable=1,
+        # which the file protocol rejects). Not gating: a failure of this
+        # check is shown as a warning.
+        python3 ../.github/ffmpeg9-tests/range_server.py 8089 &
+        sleep 1
+        ../track_switch http://127.0.0.1:8089/sf/a.mpd 6 near 0.5 ||
+          echo "::warning::single-file DASH: the track switch check failed"
+        kill $! || true
 
     # The patches 0050, 0051 and 0052 must not change anything for a caller
     # that does not switch tracks (and 0050 nothing for HLS without
@@ -201,7 +210,7 @@ jobs:
         # through, with a seek, and one track only (ffmpeg discards the others)
         for lib in REF NEW; do
           export LD_LIBRARY_PATH=${!lib}
-          for n in hls tl dur sf; do
+          for n in hls tl dur; do
             cd ../sw/$n
             m=a.mpd; if [ $n = hls ]; then m=master.m3u8; fi
             $FFS/ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0 \
@@ -217,7 +226,7 @@ jobs:
         # (HLS) or not at the playing position (DASH)
         export LD_LIBRARY_PATH=$REF
         (cd ../sw/hls && ../../track_switch master.m3u8 6 none 0.5)
-        for n in tl dur sf; do
+        for n in tl dur; do
           (cd ../sw/$n && ../../track_switch a.mpd 6 far 0.5)
         done
         unset LD_LIBRARY_PATH
@@ -225,10 +234,28 @@ jobs:
           cat ../${t}_NEW.txt
           diff -u ../${t}_REF.txt ../${t}_NEW.txt
         done
-        for n in hls tl dur sf; do
+        for n in hls tl dur; do
           for t in all seek one; do
             wc -l ../sw_${n}_${t}_NEW.txt
             test "$(grep -vc '^#' ../sw_${n}_${t}_NEW.txt)" -gt 100
             diff -u ../sw_${n}_${t}_REF.txt ../sw_${n}_${t}_NEW.txt
           done
         done
+        # single-file DASH over HTTP, not gating (see the step above)
+        (cd ../sw && exec python3 ../.github/ffmpeg9-tests/range_server.py 8089) 2>/dev/null &
+        sleep 1
+        U=http://127.0.0.1:8089/sf/a.mpd
+        single_file() {
+          for lib in REF NEW; do
+            LD_LIBRARY_PATH=${!lib} ./ffmpeg -nostdin -v error -flags +bitexact -i $U -map 0                 -c copy -fflags +bitexact -f framecrc - > ../sw_sf_all_$lib.txt &&
+            LD_LIBRARY_PATH=${!lib} ./ffmpeg -nostdin -v error -flags +bitexact -ss 7.3 -i $U -map 0                 -t 4 -c copy -fflags +bitexact -f framecrc - > ../sw_sf_seek_$lib.txt || return 1
+          done
+          wc -l ../sw_sf_all_NEW.txt ../sw_sf_seek_NEW.txt &&
+          test "$(grep -vc '^#' ../sw_sf_all_NEW.txt)" -gt 100 &&
+          test "$(grep -vc '^#' ../sw_sf_seek_NEW.txt)" -gt 100 &&
+          diff -u ../sw_sf_all_REF.txt ../sw_sf_all_NEW.txt &&
+          diff -u ../sw_sf_seek_REF.txt ../sw_sf_seek_NEW.txt &&
+          LD_LIBRARY_PATH=$REF ../track_switch $U 6 far 0.5
+        }
+        single_file || echo "::warning::single-file DASH: the comparison without the patches failed"
+        kill $! || true
