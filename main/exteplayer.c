@@ -29,6 +29,7 @@
 #include <signal.h>
 #include <inttypes.h>
 #include <stdarg.h>
+#include "pcm_export.h"
 
 #include <sys/ioctl.h>
 #include <sys/prctl.h>
@@ -53,7 +54,9 @@
 
 extern int ffmpeg_av_dict_set(const char *key, const char *value, int flags);
 extern void       aac_software_decoder_set(const int32_t val);
+extern void pcm_audio_export_set(int enabled);
 extern void  aac_latm_software_decoder_set(const int32_t val);
+extern void           aac_pts_dejitter_set(const int32_t val);
 extern void       dts_software_decoder_set(const int32_t val);
 extern void    truehd_software_decoder_set(const int32_t val);
 extern void       wma_software_decoder_set(const int32_t val);
@@ -67,6 +70,8 @@ extern void      opus_software_decoder_set(const int32_t val);
 extern void            rtmp_proto_impl_set(const int32_t val);
 extern void        flv2mpeg4_converter_set(const int32_t val);
 extern void        sel_program_id_set(const int32_t val);
+extern void adaptive_quality_set(int32_t mode, int32_t default_audio);
+extern void h264_resolution_limit_set(int32_t width, int32_t height);
 
 extern void pcm_resampling_set(int32_t val);
 extern void stereo_software_decoder_set(int32_t val);
@@ -172,7 +177,12 @@ static void TerminateWakeUp()
 
 static void *TermThreadFun(void *arg)
 {
-    const char *socket_path = "/tmp/.exteplayerterm.socket";
+#ifndef EXTEPLAYER_TERM_SOCKET
+#define EXTEPLAYER_TERM_SOCKET "/tmp/.exteplayerterm.socket"
+#endif
+    const char *socket_path = EXTEPLAYER_TERM_SOCKET;
+    if (!socket_path[0])
+        return NULL;
     struct sockaddr_un addr;
     int fd = -1;
     int cl = -1;
@@ -452,8 +462,8 @@ static void SetBuffering()
     }
 
     // make fgets not blocking
-    int flags = fcntl(stdin->_fileno, F_GETFL, 0);
-    fcntl(stdin->_fileno, F_SETFL, flags | O_NONBLOCK);
+    int flags = fcntl(fileno(stdin), F_GETFL, 0);
+    fcntl(fileno(stdin), F_SETFL, flags | O_NONBLOCK);
 }
 
 static void SetNice(int prio)
@@ -510,7 +520,10 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
 							strbuffer_add( ptrManager->tracks_cache, ", " );
 						}
 
-						sprintf( tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id , TrackList[i].Encoding, TrackList[i].Name);
+						if ('s' == argvBuff[0])
+							sprintf(tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}", TrackList[i].Id, TrackList[i].Encoding, TrackList[i].Name, TrackList[i].is_forced);
+						else
+							sprintf(tmp_str, "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id, TrackList[i].Encoding, TrackList[i].Name);
 						strbuffer_add( ptrManager->tracks_cache, tmp_str );
 
 						free(TrackList[i].Encoding);
@@ -544,7 +557,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
             ptrManager->Command(g_player, MANAGER_GET_TRACK_DESC, &track);
             if (NULL != track)
             {
-                if ('a' == argvBuff[0] || 's' == argvBuff[0])
+                if ('s' == argvBuff[0])
+                {
+                    E2iSendMsg("{\"s_c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}}\n", track->Id, track->Encoding, track->Name, track->is_forced);
+                }
+                else if ('a' == argvBuff[0])
                 {
                     E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , track->Encoding, track->Name);
                 }
@@ -563,7 +580,11 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
             else
             {
                 // no tracks
-                if ('a' == argvBuff[0] || 's' == argvBuff[0])
+                if ('s' == argvBuff[0])
+                {
+                    E2iSendMsg("{\"s_c\":{\"id\":-1,\"e\":\"\",\"n\":\"\",\"f\":0}}\n");
+                }
+                else if ('a' == argvBuff[0])
                 {
                     E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}}\n", argvBuff[0], argvBuff[1], -1, "", "");
                 }
@@ -636,13 +657,17 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
 {
     int ret = 0;
     int c;
+    int quality = 0, default_audio = 0, export_pcm = 0;
     int digit_optind = 0;
     int aopt = 0, bopt = 0;
     char *copt = 0, *dopt = 0;
-    while ( (c = getopt(argc, argv, "G:W:H:A:V:U:we3dlsrimvCa:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:")) != -1)
+    while ( (c = getopt(argc, argv, "KG:W:H:A:V:U:we3dlsrimvCa:j:n:x:u:c:h:o:p:P:t:9:0:1:4:5:6:7:f:b:F:S:O:T:L:Q:D:M:")) != -1)
     {
         switch (c)
         {
+        case 'K':
+            export_pcm = 1;
+            break;
         case 'G':
             g_graphic_sub_path = optarg;
             break;
@@ -666,6 +691,10 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
             aac_latm_software_decoder_set(flag & 0x02);
             break;
         }
+        case 'j':
+            printf("AAC PTS dejitter threshold set to %d ms\n", atoi(optarg));
+            aac_pts_dejitter_set(atoi(optarg));
+            break;
         case 'e':
             printf("Software decoder will be used for EAC3 codec\n");
             eac3_software_decoder_set(1);
@@ -720,6 +749,44 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         case 'P':
             sel_program_id_set(atoi(optarg));
             break;
+        case 'Q':
+        case 'D':
+        {
+            char *end;
+            long value;
+            errno = 0;
+            value = strtol(optarg, &end, 10);
+            if (errno || end == optarg || *end || value < 0 || value > (c == 'Q' ? 2 : 1))
+            {
+                printf("Invalid -%c value: %s\n", c, optarg);
+                ret = -1;
+            }
+            else if (c == 'Q')
+                quality = value;
+            else
+                default_audio = value;
+            break;
+        }
+        case 'M':
+        {
+            char *end, *height_start;
+            long width, height;
+            errno = 0;
+            width = strtol(optarg, &end, 10);
+            int width_valid = end != optarg && *end == 'x';
+            height_start = *end == 'x' ? end + 1 : end;
+            height = strtol(height_start, &end, 10);
+            if (errno || !width_valid ||
+                end == height_start || *end || width < 0 || height < 0 ||
+                width > INT32_MAX || height > INT32_MAX || (!width != !height))
+            {
+                printf("Invalid H.264 limit (expected WIDTHxHEIGHT): %s\n", optarg);
+                ret = -1;
+            }
+            else
+                h264_resolution_limit_set(width, height);
+            break;
+        }
         case 't':
             *pAudioTrackIdx = atoi(optarg);
             break;
@@ -827,6 +894,21 @@ static int ParseParams(int argc,char* argv[], PlayFiles_t *playbackFiles, int *p
         }
     }
 
+    adaptive_quality_set(quality, default_audio);
+    pcm_audio_export_set(export_pcm);
+    if (export_pcm)
+    {
+        aac_software_decoder_set(1);
+        aac_latm_software_decoder_set(1);
+        ac3_software_decoder_set(1);
+        eac3_software_decoder_set(1);
+        dts_software_decoder_set(1);
+        wma_software_decoder_set(1);
+        mp3_software_decoder_set(1);
+        amr_software_decoder_set(1);
+        vorbis_software_decoder_set(1);
+        opus_software_decoder_set(1);
+    }
     if (0 == ret && optind < argc)
     {
         playbackFiles->szFirstFile = map_inter_file_path(argv[optind]);
@@ -881,9 +963,9 @@ int main(int argc, char* argv[])
     /* inform client that we can handle additional commands */
 #ifdef HAVE_DREAMNEXTGEN
     /* winds on keyframes with f<speed> and b<speed> */
-    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d,\"trick\":1}}\n", 183);
+    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d,\"trick\":1}}\n", 185);
 #else
-    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d}}\n", 183);
+    E2iSendMsg("{\"EPLAYER3_EXTENDED\":{\"version\":%d}}\n", 185);
 #endif
 
     PlayFiles_t playbackFiles;
@@ -892,8 +974,13 @@ int main(int argc, char* argv[])
     if (0 != ParseParams(argc, argv, &playbackFiles, &audioTrackIdx, &subtitleTrackIdx, &linuxDvbBufferSizeMB))
     {
         printf("Usage: exteplayer3 filePath [-u user-agent] [-c cookies] [-h headers] [-p prio] [-a] [-d] [-w] [-l] [-s] [-i] [-C] [-T timeout] [-L desc] [-t audioTrackId] [-9 subtitleTrackId] [-x separateAudioUri] plabackUri\n");
+        printf("[-K] export decoded S16LE audio to " PCM_EXPORT_PATH " (forces software decoding)\n");
         printf("[-b size] Linux DVB output buffer size in MB\n");
         printf("[-a 0|1|2|3] AAC software decoding - 1 bit - AAC ADTS, 2 - bit AAC LATM\n");
+        printf("[-j ms] AAC PTS dejitter threshold in ms, 0 - disabled (default 60)\n");
+        printf("[-Q 0|1|2] HLS/DASH quality: auto/highest (0 or 2), lowest (1)\n");
+        printf("[-D 0|1] Keep only default HLS audio renditions (default 0)\n");
+        printf("[-M WIDTHxHEIGHT] Automatic H.264 resolution limit (default 0x0: disabled)\n");
         printf("[-e] EAC3 software decoding\n");
         printf("[-3] AC3 software decoding\n");
         printf("[-d] DTS software decoding\n");
