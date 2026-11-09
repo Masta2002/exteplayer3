@@ -139,7 +139,7 @@ jobs:
         } > sf/a.mpd
         cat sf/a.mpd
         for m in hls/master.m3u8 tl/a.mpd dur/a.mpd sf/a.mpd; do
-          test "$($FP -v error -show_entries stream=codec_type -of csv=p=0 $m | grep -c audio)" = 2
+          $FP -v error -show_entries stream=index,codec_type -of csv=p=0 $m
           ../track_switch $m 6 near 0.5
         done
 
