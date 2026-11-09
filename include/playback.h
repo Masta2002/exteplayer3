@@ -43,6 +43,11 @@ typedef struct PlaybackHandler_s
     uint32_t httpTimeout; // in ms
 
     void *stamp;
+
+    /* the position before the output was cleared or switched, for a relative
+     * seek: some drivers report 0 after a clear */
+    int64_t seekStartPts;
+    uint8_t seekStartPtsValid;
 } PlaybackHandler_t;
 
 #endif

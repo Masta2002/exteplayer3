@@ -5370,11 +5370,19 @@ static int32_t container_ffmpeg_seek(Context_t *context, int64_t sec, uint8_t ab
         context->playback->Command(context, PLAYBACK_LENGTH, (void*)&length);
 
         int64_t currPts = -1;
-        int ret = context->playback->Command(context, PLAYBACK_PTS, &currPts);
-        if (ret != 0)
+        if (context->playback->seekStartPtsValid)
         {
-            ffmpeg_err("fail to get current PTS\n");
-            return cERR_CONTAINER_FFMPEG_ERR;
+            /* taken before the output was cleared, see PlaybackSeek() */
+            currPts = context->playback->seekStartPts;
+        }
+        else
+        {
+            int ret = context->playback->Command(context, PLAYBACK_PTS, &currPts);
+            if (ret != 0)
+            {
+                ffmpeg_err("fail to get current PTS\n");
+                return cERR_CONTAINER_FFMPEG_ERR;
+            }
         }
         int64_t cur_sec = currPts / 90000;
 

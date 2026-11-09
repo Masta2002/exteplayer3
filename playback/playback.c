@@ -273,6 +273,26 @@ static int PlaybackPlay(Context_t  *context)
     return ret;
 }
 
+static int32_t PlaybackPts(Context_t  *context, int64_t *pts);
+
+/* Keeps the play position for the relative seek that follows, before the
+ * output is cleared or switched. Returns 1 when this call took it. */
+static int PlaybackKeepSeekStart(Context_t *context)
+{
+    int64_t pts = 0;
+    if (context->playback->seekStartPtsValid)
+    {
+        return 0;
+    }
+    if (PlaybackPts(context, &pts) != cERR_PLAYBACK_NO_ERROR)
+    {
+        return 0;
+    }
+    context->playback->seekStartPts = pts;
+    context->playback->seekStartPtsValid = 1;
+    return 1;
+}
+
 #ifdef HAVE_DREAMNEXTGEN
 static int32_t PlaybackContinue(Context_t  *context);
 static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute);
@@ -507,6 +527,8 @@ static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute)
          */
         stamp += 1;
         context->playback->stamp = (void *)stamp;
+        /* a relative seek starts from the position before the clear */
+        int keptHere = absolute ? 0 : PlaybackKeepSeekStart(context);
         context->output->Command(context, OUTPUT_CLEAR, NULL);
         if (absolute)
         {
@@ -515,6 +537,10 @@ static int32_t PlaybackSeek(Context_t  *context, int64_t *pos, uint8_t absolute)
         else
         {
             context->container->selectedContainer->Command(context, CONTAINER_SEEK, pos);
+        }
+        if (keptHere)
+        {
+            context->playback->seekStartPtsValid = 0;
         }
         context->playback->isSeeking = 0;
     }
@@ -636,6 +662,10 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
         {
 
             //PlaybackPause(context);
+            /* the switch ends with a seek to the current position: take it
+             * before the audio output restarts (audio-only streams read it
+             * from the audio device) */
+            int keptHere = PlaybackKeepSeekStart(context);
             if (context->output && context->output->audio)
             {
                 context->output->audio->Command(context, OUTPUT_SWITCH, (void*)"audio");
@@ -644,6 +674,10 @@ static int32_t PlaybackSwitchAudio(Context_t  *context, int32_t *track)
             if (context->container && context->container->selectedContainer)
             {
                 context->container->selectedContainer->Command(context, CONTAINER_SWITCH_AUDIO, &nextrackid);
+            }
+            if (keptHere)
+            {
+                context->playback->seekStartPtsValid = 0;
             }
             //PlaybackContinue(context);
         }
