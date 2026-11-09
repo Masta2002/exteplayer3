@@ -45,3 +45,5 @@ ffmpeg_ac4.patch
 0048-avformat-hls-resync-to-the-live-edge-after-a-media-s.patch
 0049-avformat-pass-tls_verify-on-to-the-connections-of-HL.patch
 0050-hls-added-support-for-EXT-X-DISCONTINUITY.patch
+0051-avformat-hls-recheck-the-discard-flags-during-playba.patch
+0052-avformat-dashdec-align-a-representation-switched-in-.patch

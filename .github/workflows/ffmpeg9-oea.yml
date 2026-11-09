@@ -8,6 +8,7 @@ on:
   push:
     paths:
       - 'ffmpeg-patches/**'
+      - '.github/ffmpeg9-tests/**'
       - '.github/workflows/ffmpeg9-oea.yml'
   workflow_dispatch:
 
@@ -94,18 +95,73 @@ jobs:
             -encryption_key $K -encryption_kid 0102030405060708090a0b0c0d0e0f10 enc.mp4
         $FF -v error -decryption_key $K -i enc.mp4 -f null -
 
-    # Patch 0050 must not change HLS without #EXT-X-DISCONTINUITY: the build
-    # tree gets libavformat without the hls.c part of 0050 (the installed
-    # one keeps it), both read the same tag-less playlists and must give the
-    # same output. Runs last, the tree is not installed again.
-    - name: HLS without discontinuity tags unchanged by patch 0050
+    # Patches 0051 (hls) and 0052 (dashdec): a track that the player switches
+    # in during playback (AVStream.discard from ALL to DEFAULT) has to arrive,
+    # and at the playing position. track_switch.c reads generated streams with
+    # two audio tracks: HLS with two audio renditions, DASH with a
+    # SegmentTimeline, with segments of a fixed duration (the two audio
+    # representations have segments of 1 and 3 seconds, so their segment
+    # numbers do not match) and DASH with single files.
+    - name: Tracks switched in during playback (patches 0051 and 0052)
+      env:
+        LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
+      run: |
+        set -eux
+        FF=$HOME/ffmpeg/bin/ffmpeg; FP=$HOME/ffmpeg/bin/ffprobe
+        gcc -O1 -Wall -Werror -o track_switch .github/ffmpeg9-tests/track_switch.c \
+            $(PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig pkg-config --cflags --libs libavformat libavcodec libavutil) -lm
+        mkdir -p sw/hls sw/tl sw/dur sw/sf && cd sw
+        A="-f lavfi -i sine=f=440:d=30 -f lavfi -i sine=f=880:d=30"
+        $FF -v error -f lavfi -i testsrc=d=30:s=160x90:r=25 $A -map 0:v -map 1:a -map 2:a \
+            -c:v libx264 -g 25 -c:a aac -b:a 64k -f hls -hls_time 2 -hls_playlist_type vod \
+            -master_pl_name master.m3u8 \
+            -var_stream_map "v:0,agroup:aud a:0,agroup:aud,default:yes a:1,agroup:aud" hls/p%v.m3u8
+        cat hls/master.m3u8
+        AS="id=0,seg_duration=1,streams=0 id=1,seg_duration=3,streams=1"
+        $FF -v error $A -map 0:a -map 1:a -c:a aac -b:a 64k -f dash -adaptation_sets "$AS" tl/a.mpd
+        $FF -v error $A -map 0:a -map 1:a -c:a aac -b:a 64k -f dash -use_timeline 0 -adaptation_sets "$AS" dur/a.mpd
+        cat tl/a.mpd dur/a.mpd
+        $FF -v error -f lavfi -i sine=f=440:d=30 -c:a aac -b:a 64k -movflags +faststart sf/a.mp4
+        $FF -v error -f lavfi -i sine=f=880:d=30 -c:a aac -b:a 64k -movflags +faststart sf/b.mp4
+        {
+          echo '<?xml version="1.0" encoding="utf-8"?>'
+          echo '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" profiles="urn:mpeg:dash:profile:isoff-on-demand:2011" type="static" mediaPresentationDuration="PT30S" minBufferTime="PT2S">'
+          echo '<Period id="0" start="PT0S">'
+          for r in a b; do
+            echo "<AdaptationSet id=\"$r\" contentType=\"audio\" lang=\"en\">"
+            echo "<Representation id=\"$r\" mimeType=\"audio/mp4\" codecs=\"mp4a.40.2\" bandwidth=\"64000\" audioSamplingRate=\"44100\">"
+            echo "<BaseURL>$r.mp4</BaseURL>"
+            echo '</Representation>'
+            echo '</AdaptationSet>'
+          done
+          echo '</Period>'
+          echo '</MPD>'
+        } > sf/a.mpd
+        cat sf/a.mpd
+        for m in hls/master.m3u8 tl/a.mpd dur/a.mpd sf/a.mpd; do
+          test "$($FP -v error -show_entries stream=codec_type -of csv=p=0 $m | grep -c audio)" = 2
+          ../track_switch $m 6 near 0.5
+        done
+
+    # The patches 0050, 0051 and 0052 must not change anything for a caller
+    # that does not switch tracks (and 0050 nothing for HLS without
+    # #EXT-X-DISCONTINUITY): the build tree gets libavformat without 0052,
+    # 0051 and the hls.c part of 0050 (the installed one keeps them), both
+    # read the same streams and must give the same output. The demuxers
+    # without the patches also show that track_switch tests something: HLS
+    # never delivers the track that is switched in (OE-A patch 0008), DASH
+    # starts it somewhere else. Runs last, the tree is not installed again.
+    - name: HLS and DASH unchanged by the patches 0050 to 0052 without a track switch
       run: |
         set -eux
         cd ffsrc
         awk '/^diff --git /{p = ($0 ~ /^diff --git a\/libavformat\/hls\.c /)} p' \
             ../ffmpeg-patches/0050-*.patch > ../hls0050.diff
         test -s ../hls0050.diff
+        patch -R -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0052-*.patch
+        patch -R -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0051-*.patch
         patch -R -p1 --no-backup-if-mismatch -s < ../hls0050.diff
+        grep -A3 'if (c->first_packet) {' libavformat/hls.c
         make -j$(nproc)
         REF=$PWD/libavutil:$PWD/libavcodec:$PWD/libavformat:$PWD/libavdevice:$PWD/libavfilter:$PWD/libswscale:$PWD/libswresample
         NEW=$HOME/ffmpeg/lib
@@ -135,8 +191,37 @@ jobs:
           ./ffmpeg -nostdin -v error -flags +bitexact -live_start_index -2 -max_reload 1 \
               -i tests/data/hls_notag_live.m3u8 -c copy -fflags +bitexact -f framecrc - > ../liveedge_$lib.txt
         done
+        # the streams of the track switch check, without a switch: read
+        # through, with a seek, and one track only (ffmpeg discards the others)
+        for lib in REF NEW; do
+          export LD_LIBRARY_PATH=${!lib}
+          for n in hls tl dur sf; do
+            m=../sw/$n/a.mpd
+            if [ $n = hls ]; then m=../sw/hls/master.m3u8; fi
+            ./ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0 \
+                -c copy -fflags +bitexact -f framecrc - > ../sw_${n}_all_$lib.txt
+            ./ffmpeg -nostdin -v error -flags +bitexact -ss 7.3 -i $m -map 0 \
+                -t 4 -c copy -fflags +bitexact -f framecrc - > ../sw_${n}_seek_$lib.txt
+            ./ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0:a:1 \
+                -c copy -fflags +bitexact -f framecrc - > ../sw_${n}_one_$lib.txt
+          done
+        done
+        # without the patches the track that is switched in does not arrive
+        # (HLS) or not at the playing position (DASH)
+        export LD_LIBRARY_PATH=$REF
+        (cd ../sw && ../track_switch hls/master.m3u8 6 none 0.5)
+        for n in tl dur sf; do
+          (cd ../sw && ../track_switch $n/a.mpd 6 far 0.5)
+        done
         unset LD_LIBRARY_PATH
         for t in vod vodseek liveedge; do
           cat ../${t}_NEW.txt
           diff -u ../${t}_REF.txt ../${t}_NEW.txt
+        done
+        for n in hls tl dur sf; do
+          for t in all seek one; do
+            wc -l ../sw_${n}_${t}_NEW.txt
+            test "$(grep -vc '^#' ../sw_${n}_${t}_NEW.txt)" -gt 100
+            diff -u ../sw_${n}_${t}_REF.txt ../sw_${n}_${t}_NEW.txt
+          done
         done
