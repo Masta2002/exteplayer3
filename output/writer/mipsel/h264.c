@@ -460,9 +460,19 @@ static int writeData(void* _call)
             free(private_data);
             private_data = NULL;
         }
+    }
 
-        /* stream has its own SPS/PPS: do not prepend avcC ones, they can differ
-         * (re-cut TV recordings) and break the picture */
+    /* The avcC sets go out with the first frame: a set found only there (the
+     * PPS of a stream that repeats only its SPS, a second PPS) must reach the
+     * decoder, and the sets of the stream follow in the same frame and win.
+     * A stream with its own SPS/PPS gets no avcC ones after that, they can
+     * differ (re-cut TV recordings) and break the picture. A stream without
+     * gets them again with every IDR frame, the first frame after a seek can
+     * still be dropped as stale. */
+    if (!avc3 && CodecData != NULL)
+    {
+        int has_idr = 0;
+
         if (!sps_pps_in_stream && NalLengthBytes >= 1 && NalLengthBytes <= 4)
         {
             uint32_t p = 0;
@@ -472,13 +482,14 @@ static int writeData(void* _call)
                 for (k = 0; k < NalLengthBytes; k++) nl = (nl << 8) | call->data[p + k];
                 uint8_t t = call->data[p + NalLengthBytes] & 0x1f;
                 if (t == 7 || t == 8) { sps_pps_in_stream = 1; break; }
+                if (t == 5) has_idr = 1;
                 /* zero or corrupt NAL length */
                 if (nl == 0 || nl > (uint32_t)call->len - p - NalLengthBytes) break;
                 p += NalLengthBytes + nl;
             }
         }
 
-        if (CodecData != NULL && !sps_pps_in_stream)
+        if (initialHeader || (has_idr && !sps_pps_in_stream))
         {
             iov[ic].iov_base  = CodecData;
             iov[ic++].iov_len = CodecDataLen;
