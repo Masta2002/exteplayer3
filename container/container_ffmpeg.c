@@ -672,9 +672,11 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
         return  (ac3_software_decode) ? "A_IPCM" : "A_AC3";
     case AV_CODEC_ID_EAC3:
         return  (eac3_software_decode) ? "A_IPCM" : "A_EAC3";
+#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(60, 31, 100)
     case AV_CODEC_ID_AC4:
         /* No kernel AC-4 writer — always software decode via librempeg. */
         return "A_IPCM";
+#endif
     case AV_CODEC_ID_DTS:
         return (dts_software_decode) ? "A_IPCM" : "A_DTS";
     case AV_CODEC_ID_WMAV1:
