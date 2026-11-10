@@ -3105,11 +3105,14 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             av_dict_set(&avio_opts, "max_reload",             "10", 0);
             av_dict_set(&avio_opts, "http_persistent",         "1", 0);
             av_dict_set(&avio_opts, "http_multiple",           "1", 0);
-            /* segments behind tracking redirects carry no file extension
-             * (FAST channels); the content decides, as in GStreamer */
-            av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
-            av_dict_set(&avio_opts, "extension_picky",          "0", 0);
         }
+        /* segments behind tracking redirects carry no file extension
+         * (FAST channels); the content decides, as in GStreamer. Not only
+         * for urls with .m3u: a playlist is found by its content type too
+         * (.php?id=, a token path), its segments are named just as freely.
+         * Options of the HLS demuxer only, the others leave them unused. */
+        av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
+        av_dict_set(&avio_opts, "extension_picky",          "0", 0);
 
         if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
         {
