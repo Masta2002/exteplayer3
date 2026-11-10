@@ -276,7 +276,7 @@ jobs:
         mkdir ffvan && tar -xf ffsrc/ff.tar.xz --strip-components=1 -C ffvan
         cd ffvan
         ./configure --disable-everything --disable-autodetect --disable-doc --disable-ffplay --disable-ffprobe \
-          --enable-libxml2 --enable-demuxer=dash,mov --enable-protocol=file,http,tcp --enable-muxer=framecrc \
+          --enable-libxml2 --enable-demuxer=dash,mov --enable-protocol=file,http,tcp,pipe --enable-muxer=framecrc \
           --enable-decoder=aac --enable-parser=aac > /dev/null &&
         make -j$(nproc) ffmpeg > /dev/null || { echo "::warning::FFmpeg 9.0.2 without patches did not build"; exit 0; }
         cd ../sw
@@ -356,7 +356,9 @@ jobs:
         test "$(grep -c . NEW_3.txt)" = 1
         grep -q fra NEW_3.txt
         test "$(grep -c . NEW_4.txt)" = 3
-        sed -n 2p NEW_5.txt | grep -q pcm_mulaw
+        # (5: a metadata specifier does not match an output stream at that
+        # point, with and without the patch: the stream stays as copied)
+        sed -n 2p NEW_5.txt | grep -q pcm_alaw
         # and ffmpeg without the patch does not know the codec form
         if $OLD -nostdin -v error -i in.mkv -map 0 -c copy -c:a:pcm_alaw pcm_mulaw -bitexact -y old_codec.mkv; then
           echo "ffmpeg without patch 0053 accepted -c:a:pcm_alaw"; exit 1
