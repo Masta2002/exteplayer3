@@ -41,6 +41,14 @@ void FlushBits(BitPacker_t * ld);
 int8_t PlaybackDieNow(int8_t val);
 stb_type_t GetSTBType();
 
+/* optional software playback clock, see output/writer/common/misc.c */
+#define PACING_STREAM_VIDEO 0
+#define PACING_STREAM_AUDIO 1
+#define PACING_STREAM_MAX   2
+int32_t OutputPacingLeadMs(void);
+void OutputPacingReset(void);
+void OutputPacingWait(void *context, int32_t stream, int64_t pts);
+
 /* ***************************** */
 /* MISC Functions                */
 /* ***************************** */
