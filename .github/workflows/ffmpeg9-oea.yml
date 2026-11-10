@@ -15,8 +15,27 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
     - uses: actions/checkout@v4
+
+    # Every test command runs under a time limit: a demuxer that does not
+    # come back is a failure with a message, not a job that hangs for hours.
+    # usage: tmo command ...   (TMO=<seconds>, default 120)
+    - name: Time limit for the test commands
+      run: |
+        mkdir -p $HOME/bin
+        cat > $HOME/bin/tmo <<'EOF'
+        #!/bin/sh
+        timeout -k 10 "${TMO:-120}" "$@"
+        rc=$?
+        if [ $rc -eq 124 ] || [ $rc -eq 137 ]; then
+          echo "::error::TIMEOUT after ${TMO:-120} s: $*" >&2
+        fi
+        exit $rc
+        EOF
+        chmod +x $HOME/bin/tmo
+        echo "$HOME/bin" >> $GITHUB_PATH
 
     - name: Install dependencies
       run: |
@@ -48,7 +67,7 @@ jobs:
       run: |
         cd ffsrc
         export LD_LIBRARY_PATH=$HOME/ffmpeg/lib
-        make -j$(nproc) fate-hls-discontinuity fate-hls-discontinuity-seek fate-hls-discontinuity-notag-live || {
+        TMO=900 tmo make -j$(nproc) fate-hls-discontinuity fate-hls-discontinuity-seek fate-hls-discontinuity-notag-live || {
           cat tests/data/fate/hls-discontinuity*.err tests/data/fate/hls-discontinuity*.diff 2>/dev/null
           exit 1
         }
@@ -78,7 +97,7 @@ jobs:
             done
           done
         }
-        make -j$(nproc) fate-ffmpeg-spec-codec-all KEEP=1 || { show; exit 1; }
+        TMO=900 tmo make -j$(nproc) fate-ffmpeg-spec-codec-all KEEP=1 || { show; exit 1; }
         show
 
     - name: Build exteplayer3
@@ -86,7 +105,7 @@ jobs:
         ./autogen.sh
         PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig ./configure
         make -j$(nproc)
-        LD_LIBRARY_PATH=$HOME/ffmpeg/lib ./exteplayer3 2>&1 | grep -q -- '-Q'
+        LD_LIBRARY_PATH=$HOME/ffmpeg/lib tmo ./exteplayer3 2>&1 | grep -q -- '-Q'
 
     - name: Build exteplayer3 of oe-alliance master
       run: |
@@ -101,7 +120,7 @@ jobs:
         LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
       run: |
         set -eux
-        FF=$HOME/ffmpeg/bin/ffmpeg; FP=$HOME/ffmpeg/bin/ffprobe
+        FF="tmo $HOME/ffmpeg/bin/ffmpeg"; FP="tmo $HOME/ffmpeg/bin/ffprobe"
         mkdir t && cd t
         # HLS with WebVTT subtitles
         printf 'WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nhello\n' > sub.vtt
@@ -135,7 +154,7 @@ jobs:
         LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
       run: |
         set -eux
-        FF=$HOME/ffmpeg/bin/ffmpeg; FP=$HOME/ffmpeg/bin/ffprobe
+        FF="tmo $HOME/ffmpeg/bin/ffmpeg"; FP="tmo $HOME/ffmpeg/bin/ffprobe"
         gcc -O1 -Wall -Werror -o track_switch .github/ffmpeg9-tests/track_switch.c \
             $(PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig pkg-config --cflags --libs libavformat libavcodec libavutil) -lm
         mkdir -p sw/hls sw/tl sw/dur sw/sf sw/sfm && cd sw
@@ -170,77 +189,116 @@ jobs:
         $FF -v error $A -map 0:a -map 1:a -c:a aac -b:a 64k -f dash -single_file 1 \
             -adaptation_sets "id=0,streams=0 id=1,streams=1" sfm/a.mpd
         cat sfm/a.mpd
+        # the same with media ranges that end 500 bytes too early: the
+        # samples at the end of every segment are not in its range
+        awk '{ if (match($0, /mediaRange="[0-9]+-[0-9]+"/)) {
+                 split(substr($0, RSTART + 12, RLENGTH - 13), a, "-")
+                 $0 = substr($0, 1, RSTART - 1) "mediaRange=\"" a[1] "-" (a[2] - 500) "\"" substr($0, RSTART + RLENGTH)
+               }
+               print }' sfm/a.mpd > sfm/short.mpd
+        diff sfm/a.mpd sfm/short.mpd | head -6 || true
+        test "$(grep -c mediaRange sfm/short.mpd)" = 12
+        test "$(diff sfm/a.mpd sfm/short.mpd | grep -c '^>')" = 12
         # sf: a local manifest whose representations are one file each needs
         # patch 0054 (without it the segment is opened with the http option
         # seekable=1, which the file protocol rejects)
-        for n in hls tl dur sf; do
+        for n in hls tl dur sf sfm; do
           cd $n; f=a.mpd; if [ $n = hls ]; then f=master.m3u8; fi
           $FP -v error -show_entries stream=index,codec_type -of csv=p=0 $f || {
             $FP -v debug $f 2>&1 | tail -80
             exit 1
           }
-          ../../track_switch $f 6 near 0.5
+          if [ $n != sfm ]; then tmo ../../track_switch $f 6 near 0.5; fi
           cd ..
         done
         python3 ../.github/ffmpeg9-tests/range_server.py 8089 &
+        SRV=$!
+        trap 'kill $SRV 2>/dev/null || true' EXIT
         sleep 1
         H=http://127.0.0.1:8089
-        # not gating: a failure of this check is shown as a warning
-        ../track_switch $H/sf/a.mpd 6 near 0.5 ||
+        # not gating: a failure of these checks is shown as a warning
+        tmo ../track_switch $H/sf/a.mpd 6 near 0.5 ||
           echo "::warning::single-file DASH over HTTP: the track switch check failed"
-        # patch 0054: the local single files give the same packets as over
-        # HTTP, read through and with a seek
+        (cd sfm && tmo ../../track_switch a.mpd 6 near 0.5) ||
+          echo "::warning::local byte range DASH: the track switch check failed"
+        # Patch 0054: local manifests give the same packets as over HTTP,
+        # read through and with a seek. sf: one file per representation.
+        # sfm: byte range segments (the single file of the dash muxer).
+        # sfm/short: ranges that are too short - whatever comes out, the
+        # demuxer has to come back (it did not: the job ran into its limit).
         rd()   { $FF -nostdin -v error -flags +bitexact "$@" -map 0 -c copy -fflags +bitexact -f framecrc -; }
         seek() { $FF -nostdin -v error -flags +bitexact -ss 7.3 "$@" -map 0 -t 4 -c copy -fflags +bitexact -f framecrc -; }
-        rd   -i sf/a.mpd    > sf_all_local.txt
-        seek -i sf/a.mpd    > sf_seek_local.txt
-        rd   -i $H/sf/a.mpd > sf_all_http.txt
-        seek -i $H/sf/a.mpd > sf_seek_http.txt
-        wc -l sf_all_local.txt sf_seek_local.txt
-        test "$(grep -vc '^#' sf_all_local.txt)" -gt 100
-        test "$(grep -vc '^#' sf_seek_local.txt)" -gt 100
-        diff -u sf_all_http.txt sf_all_local.txt
-        diff -u sf_seek_http.txt sf_seek_local.txt
-        # Byte range segments (the single file of the dash muxer): over HTTP
-        # they are requested with offset/end_offset. The file protocol has no
-        # such options, FFmpeg 9.0.2 does not support them for a local file
-        # either. Information only.
-        if rd -i $H/sfm/a.mpd > sfm_all_http.txt 2> sfm_http.err; then
-          echo "::notice::single file of the dash muxer over HTTP: $(grep -vc '^#' sfm_all_http.txt) packets"
+        hung=0
+        for n in sf/a sfm/a sfm/short; do
+          for w in local http; do
+            u=$n.mpd; if [ $w = http ]; then u=$H/$u; fi
+            k=$(echo $n | tr / _)_$w
+            for t in all seek; do
+              rc=0
+              if [ $t = all ]; then
+                rd -i $u > pat_${k}_$t.txt 2> pat_${k}_$t.err || rc=$?
+              else
+                seek -i $u > pat_${k}_$t.txt 2> pat_${k}_$t.err || rc=$?
+              fi
+              tail -3 pat_${k}_$t.err
+              echo "$k $t $rc" >> pat_rc.txt
+              if [ $rc = 124 ] || [ $rc = 137 ]; then hung=1; fi
+              echo "::notice::patched build, $w $n.mpd ($t): exit $rc, $(grep -vc '^#' pat_${k}_$t.txt) packets, $(grep -c . pat_${k}_$t.err) lines of errors"
+            done
+          done
+        done
+        cat pat_rc.txt
+        test $hung = 0
+        for k in sf_a sfm_a; do
+          for w in local http; do
+            grep -qx "${k}_$w all 0" pat_rc.txt
+            grep -qx "${k}_$w seek 0" pat_rc.txt
+          done
+          test "$(grep -vc '^#' pat_${k}_local_all.txt)" -gt 100
+          test "$(grep -vc '^#' pat_${k}_local_seek.txt)" -gt 0
+          diff -u pat_${k}_http_all.txt pat_${k}_local_all.txt
+          diff -u pat_${k}_http_seek.txt pat_${k}_local_seek.txt
+        done
+        test "$(grep -vc '^#' pat_sf_a_local_seek.txt)" -gt 100
+        if cmp -s pat_sfm_short_http_all.txt pat_sfm_short_local_all.txt; then
+          echo "::notice::patched build, sfm/short.mpd: the same packets local and over HTTP"
         else
-          tail -5 sfm_http.err
-          echo "::warning::single file of the dash muxer over HTTP: not readable"
+          echo "::warning::patched build, sfm/short.mpd: local and HTTP differ"
         fi
-        if rd -i sfm/a.mpd > sfm_all_local.txt 2> sfm_local.err && cmp -s sfm_all_http.txt sfm_all_local.txt; then
-          echo "::notice::single file of the dash muxer, local: the same packets as over HTTP"
-        else
-          tail -5 sfm_local.err
-          echo "::notice::single file of the dash muxer, local: $(grep -vc '^#' sfm_all_local.txt) packets, not the same as over HTTP (byte ranges of a local file are not supported)"
-        fi
-        kill $! || true
 
-    # What FFmpeg 9.0.2 without any patch does with the local single-file
-    # manifests of the step above (demuxers only, built from the same
-    # tarball). Information only, nothing here is gating.
-    - name: Local single-file DASH in FFmpeg 9.0.2 without patches (information)
+    # What FFmpeg 9.0.2 without any patch does with the manifests of the
+    # step above, local and over HTTP (demuxers only, built from the same
+    # tarball). Information only, nothing here is gating; a command that
+    # does not come back is ended after 60 seconds.
+    - name: Single-file DASH in FFmpeg 9.0.2 without patches (information)
       run: |
         set +e -ux
         mkdir ffvan && tar -xf ffsrc/ff.tar.xz --strip-components=1 -C ffvan
         cd ffvan
         ./configure --disable-everything --disable-autodetect --disable-doc --disable-ffplay --disable-ffprobe \
-          --enable-libxml2 --enable-demuxer=dash,mov --enable-protocol=file --enable-muxer=framecrc \
+          --enable-libxml2 --enable-demuxer=dash,mov --enable-protocol=file,http,tcp --enable-muxer=framecrc \
           --enable-decoder=aac --enable-parser=aac > /dev/null &&
         make -j$(nproc) ffmpeg > /dev/null || { echo "::warning::FFmpeg 9.0.2 without patches did not build"; exit 0; }
         cd ../sw
-        for n in sf sfm; do
-          ../ffvan/ffmpeg -nostdin -v error -flags +bitexact -i $n/a.mpd -map 0 -c copy -fflags +bitexact \
-              -f framecrc - > ${n}_all_vanilla.txt 2> ${n}_vanilla.err
-          rc=$?
-          tail -5 ${n}_vanilla.err
-          same=differ
-          if cmp -s ${n}_all_vanilla.txt ${n}_all_local.txt; then same="are the same"; fi
-          diff -u ${n}_all_vanilla.txt ${n}_all_local.txt | head -40
-          echo "::notice::FFmpeg 9.0.2 without patches, local $n/a.mpd: exit $rc, $(grep -vc '^#' ${n}_all_vanilla.txt) packets, $(grep -c . ${n}_vanilla.err) lines of errors; the packets of the patched build $same"
+        python3 ../.github/ffmpeg9-tests/range_server.py 8089 &
+        SRV=$!
+        trap 'kill $SRV 2>/dev/null || true' EXIT
+        sleep 1
+        H=http://127.0.0.1:8089
+        for n in sf/a sfm/a sfm/short; do
+          for w in local http; do
+            u=$n.mpd; if [ $w = http ]; then u=$H/$u; fi
+            k=$(echo $n | tr / _)_$w
+            timeout -k 5 60 ../ffvan/ffmpeg -nostdin -v error -flags +bitexact -i $u -map 0 -c copy -fflags +bitexact \
+                -f framecrc - > van_${k}_all.txt 2> van_${k}_all.err
+            rc=$?
+            tail -3 van_${k}_all.err
+            what="exit $rc"
+            if [ $rc = 124 ] || [ $rc = 137 ]; then what="NO RETURN, ended after 60 s"; fi
+            same="differ from"
+            if cmp -s van_${k}_all.txt pat_${k}_all.txt; then same="are the same as"; fi
+            echo "::notice::FFmpeg 9.0.2 without patches, $w $n.mpd: $what, $(grep -vc '^#' van_${k}_all.txt) packets, $(grep -c . van_${k}_all.err) lines of errors; the packets $same those of the patched build ($(grep -vc '^#' pat_${k}_all.txt))"
+          done
         done
         exit 0
 
@@ -254,7 +312,7 @@ jobs:
         LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
       run: |
         set -eux
-        NEW=$HOME/ffmpeg/bin/ffmpeg; FP=$HOME/ffmpeg/bin/ffprobe
+        NEW="tmo $HOME/ffmpeg/bin/ffmpeg"; FP="tmo $HOME/ffmpeg/bin/ffprobe"
         cd ffsrc
         patch -R -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0053-*.patch
         test "$(grep -c stream_specifier_codec fftools/cmdutils.c || true)" = 0
@@ -262,7 +320,7 @@ jobs:
         cp ffmpeg ../ffmpeg_old
         patch -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0053-*.patch
         make -j$(nproc) ffmpeg
-        OLD=$PWD/../ffmpeg_old
+        OLD="tmo $PWD/../ffmpeg_old"
         mkdir ../spec && cd ../spec
         $NEW -nostdin -v error -f lavfi -i sine=1000:d=0.5 -f lavfi -i sine=2000:d=0.5 -f lavfi -i sine=3000:d=0.5 \
             -map 0 -map 1 -map 2 -c:a pcm_s16le -c:a:1 pcm_alaw \
@@ -316,11 +374,44 @@ jobs:
     # without the patches also show that track_switch tests something: HLS
     # never delivers the track that is switched in (OE-A patch 0008), DASH
     # starts it somewhere else. Runs last, the tree is not installed again.
-    - name: HLS and DASH unchanged by the patches 0050 to 0052 without a track switch
+    # Before that, patch 0054 alone: without it the tree reads the DASH
+    # manifests over HTTP (one file per representation, byte range
+    # segments) exactly as the installed libraries with it.
+    - name: HLS and DASH unchanged by the patches 0050 to 0052 and 0054 without a track switch
       run: |
         set -eux
         cd ffsrc
         FFS=$PWD
+        REF=$PWD/libavutil:$PWD/libavcodec:$PWD/libavformat:$PWD/libavdevice:$PWD/libavfilter:$PWD/libswscale:$PWD/libswresample
+        NEW=$HOME/ffmpeg/lib
+        (cd ../sw && exec python3 ../.github/ffmpeg9-tests/range_server.py 8089) 2>/dev/null &
+        SRV=$!
+        trap 'kill $SRV 2>/dev/null || true' EXIT
+        sleep 1
+        H=http://127.0.0.1:8089
+        patch -R -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0054-*.patch
+        test "$(grep -c segment_is_http libavformat/dashdec.c || true)" = 0
+        make -j$(nproc)
+        for lib in REF NEW; do
+          for n in sf sfm; do
+            LD_LIBRARY_PATH=${!lib} tmo ./ffmpeg -nostdin -v error -flags +bitexact -i $H/$n/a.mpd -map 0 \
+                -c copy -fflags +bitexact -f framecrc - > ../h54_${n}_all_$lib.txt
+            LD_LIBRARY_PATH=${!lib} tmo ./ffmpeg -nostdin -v error -flags +bitexact -ss 7.3 -i $H/$n/a.mpd -map 0 \
+                -t 4 -c copy -fflags +bitexact -f framecrc - > ../h54_${n}_seek_$lib.txt
+          done
+        done
+        for n in sf sfm; do
+          for t in all seek; do
+            wc -l ../h54_${n}_${t}_NEW.txt
+            test "$(grep -vc '^#' ../h54_${n}_${t}_NEW.txt)" -gt 0
+            diff -u ../h54_${n}_${t}_REF.txt ../h54_${n}_${t}_NEW.txt
+            # and the same as the installed ffmpeg read in the step above
+            diff -u ../sw/pat_${n}_a_http_${t}.txt ../h54_${n}_${t}_NEW.txt
+          done
+        done
+        test "$(grep -vc '^#' ../h54_sf_all_NEW.txt)" -gt 100
+        test "$(grep -vc '^#' ../h54_sfm_all_NEW.txt)" -gt 100
+        echo "::notice::patch 0054 over HTTP: the same packets without and with it (sf $(grep -vc '^#' ../h54_sf_all_NEW.txt), sfm $(grep -vc '^#' ../h54_sfm_all_NEW.txt) packets, and with a seek)"
         awk '/^diff --git /{p = ($0 ~ /^diff --git a\/libavformat\/hls\.c /)} p' \
             ../ffmpeg-patches/0050-*.patch > ../hls0050.diff
         test -s ../hls0050.diff
@@ -329,8 +420,6 @@ jobs:
         patch -R -p1 --no-backup-if-mismatch -s < ../hls0050.diff
         grep -A3 'if (c->first_packet) {' libavformat/hls.c
         make -j$(nproc)
-        REF=$PWD/libavutil:$PWD/libavcodec:$PWD/libavformat:$PWD/libavdevice:$PWD/libavfilter:$PWD/libswscale:$PWD/libswresample
-        NEW=$HOME/ffmpeg/lib
         reflib=$(LD_LIBRARY_PATH=$REF ldd ./ffmpeg | awk '/libavformat/ {print $3}')
         newlib=$(LD_LIBRARY_PATH=$NEW ldd ./ffmpeg | awk '/libavformat/ {print $3}')
         echo "unpatched: $reflib  patched: $newlib"
@@ -340,21 +429,21 @@ jobs:
         # (generated by the unpatched one if the patch does not ship it yet)
         T=fate-hls-discontinuity-notag-live
         if [ ! -f tests/ref/fate/hls-discontinuity-notag-live ]; then
-          LD_LIBRARY_PATH=$REF make $T GEN=1 || true
+          LD_LIBRARY_PATH=$REF TMO=600 tmo make $T GEN=1 || true
         fi
         cat tests/ref/fate/hls-discontinuity-notag-live
-        LD_LIBRARY_PATH=$REF make $T
-        LD_LIBRARY_PATH=$NEW make $T
+        LD_LIBRARY_PATH=$REF TMO=600 tmo make $T
+        LD_LIBRARY_PATH=$NEW TMO=600 tmo make $T
         # the same segments as VOD, read through and with a seek
         sed '$a #EXT-X-ENDLIST' tests/data/hls_notag_live.m3u8 > tests/data/hls_notag_vod.m3u8
         cat tests/data/hls_notag_vod.m3u8
         for lib in REF NEW; do
           export LD_LIBRARY_PATH=${!lib}
-          ./ffmpeg -nostdin -v error -flags +bitexact -i tests/data/hls_notag_vod.m3u8 \
+          tmo ./ffmpeg -nostdin -v error -flags +bitexact -i tests/data/hls_notag_vod.m3u8 \
               -c copy -fflags +bitexact -f framecrc - > ../vod_$lib.txt
-          ./ffmpeg -nostdin -v error -flags +bitexact -ss 1.2 -i tests/data/hls_notag_vod.m3u8 \
+          tmo ./ffmpeg -nostdin -v error -flags +bitexact -ss 1.2 -i tests/data/hls_notag_vod.m3u8 \
               -t 1 -c copy -fflags +bitexact -f framecrc - > ../vodseek_$lib.txt
-          ./ffmpeg -nostdin -v error -flags +bitexact -live_start_index -2 -max_reload 1 \
+          tmo ./ffmpeg -nostdin -v error -flags +bitexact -live_start_index -2 -max_reload 1 \
               -i tests/data/hls_notag_live.m3u8 -c copy -fflags +bitexact -f framecrc - > ../liveedge_$lib.txt
         done
         # the streams of the track switch check, without a switch: read
@@ -364,11 +453,11 @@ jobs:
           for n in hls tl dur; do
             cd ../sw/$n
             m=a.mpd; if [ $n = hls ]; then m=master.m3u8; fi
-            $FFS/ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0 \
+            tmo $FFS/ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0 \
                 -c copy -fflags +bitexact -f framecrc - > $FFS/../sw_${n}_all_$lib.txt
-            $FFS/ffmpeg -nostdin -v error -flags +bitexact -ss 7.3 -i $m -map 0 \
+            tmo $FFS/ffmpeg -nostdin -v error -flags +bitexact -ss 7.3 -i $m -map 0 \
                 -t 4 -c copy -fflags +bitexact -f framecrc - > $FFS/../sw_${n}_seek_$lib.txt
-            $FFS/ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0:a:1 \
+            tmo $FFS/ffmpeg -nostdin -v error -flags +bitexact -i $m -map 0:a:1 \
                 -c copy -fflags +bitexact -f framecrc - > $FFS/../sw_${n}_one_$lib.txt
             cd $FFS
           done
@@ -376,9 +465,9 @@ jobs:
         # without the patches the track that is switched in does not arrive
         # (HLS) or not at the playing position (DASH)
         export LD_LIBRARY_PATH=$REF
-        (cd ../sw/hls && ../../track_switch master.m3u8 6 none 0.5)
+        (cd ../sw/hls && tmo ../../track_switch master.m3u8 6 none 0.5)
         for n in tl dur; do
-          (cd ../sw/$n && ../../track_switch a.mpd 6 far 0.5)
+          (cd ../sw/$n && tmo ../../track_switch a.mpd 6 far 0.5)
         done
         unset LD_LIBRARY_PATH
         for t in vod vodseek liveedge; do
@@ -392,21 +481,19 @@ jobs:
             diff -u ../sw_${n}_${t}_REF.txt ../sw_${n}_${t}_NEW.txt
           done
         done
-        # single-file DASH over HTTP, not gating (see the step above)
-        (cd ../sw && exec python3 ../.github/ffmpeg9-tests/range_server.py 8089) 2>/dev/null &
-        sleep 1
-        U=http://127.0.0.1:8089/sf/a.mpd
+        # single-file DASH over HTTP without the patches 0051, 0052 and 0054,
+        # not gating (see the step above)
+        U=$H/sf/a.mpd
         single_file() {
           for lib in REF NEW; do
-            LD_LIBRARY_PATH=${!lib} ./ffmpeg -nostdin -v error -flags +bitexact -i $U -map 0                 -c copy -fflags +bitexact -f framecrc - > ../sw_sf_all_$lib.txt &&
-            LD_LIBRARY_PATH=${!lib} ./ffmpeg -nostdin -v error -flags +bitexact -ss 7.3 -i $U -map 0                 -t 4 -c copy -fflags +bitexact -f framecrc - > ../sw_sf_seek_$lib.txt || return 1
+            LD_LIBRARY_PATH=${!lib} tmo ./ffmpeg -nostdin -v error -flags +bitexact -i $U -map 0                 -c copy -fflags +bitexact -f framecrc - > ../sw_sf_all_$lib.txt &&
+            LD_LIBRARY_PATH=${!lib} tmo ./ffmpeg -nostdin -v error -flags +bitexact -ss 7.3 -i $U -map 0                 -t 4 -c copy -fflags +bitexact -f framecrc - > ../sw_sf_seek_$lib.txt || return 1
           done
           wc -l ../sw_sf_all_NEW.txt ../sw_sf_seek_NEW.txt &&
           test "$(grep -vc '^#' ../sw_sf_all_NEW.txt)" -gt 100 &&
           test "$(grep -vc '^#' ../sw_sf_seek_NEW.txt)" -gt 100 &&
           diff -u ../sw_sf_all_REF.txt ../sw_sf_all_NEW.txt &&
           diff -u ../sw_sf_seek_REF.txt ../sw_sf_seek_NEW.txt &&
-          LD_LIBRARY_PATH=$REF ../track_switch $U 6 far 0.5
+          LD_LIBRARY_PATH=$REF tmo ../track_switch $U 6 far 0.5
         }
         single_file || echo "::warning::single-file DASH: the comparison without the patches failed"
-        kill $! || true

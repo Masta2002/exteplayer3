@@ -12,19 +12,36 @@ opened with seekable=1 since "dashdec: improved handling manifests with
 one segment", and a byte range segment since "avformat/dashdec: explicit
 http options for byte range segments". For a local manifest the file
 protocol rejects that value, the segment could not be opened and the
-manifest not be played at all, which works in FFmpeg 9.0.2.
+manifest not be played at all.
 
 The options are now only set when open_url() reaches the segment through
 http(s), also below crypto. A local file is opened with the defaults of
-the file protocol. offset and end_offset are passed as before; the file
-protocol does not know them, so byte range segments of a local file are
-still not supported, as in FFmpeg 9.0.2.
+the file protocol.
+
+Byte range segments of a local file (SegmentList with mediaRange, the
+single_file output of the dash muxer) are read as well now: offset and
+end_offset are options of the http protocol, the file protocol ignores
+them and starts every segment at the beginning of the file. The start of
+the range is looked up with avio_seek() after opening, the length was
+limited by read_from_url() already. FFmpeg 9.0.2 does not do that: it
+feeds the demuxer the beginning of the file for every segment.
+
+That input also showed that read_data() returns 0 at the end of a byte
+range segment (a read of 0 bytes). avio no longer turns 0 into EOF, so
+a demuxer that skips to a position behind the data of the segment (the
+range is shorter than the media in it, as with the wrong data above)
+called read_data() forever in avio_seek(). read_data() returns
+AVERROR_EOF now, as at the end of a segment that is a whole file.
+
+Supported for local manifests after this: segments in files of their own
+(as before), one file per representation, byte range segments. Nothing
+changes for http: the options and the requests are the same.
 ---
- libavformat/dashdec.c | 25 +++++++++++++++++++++++--
- 1 file changed, 23 insertions(+), 2 deletions(-)
+ libavformat/dashdec.c | 47 +++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 45 insertions(+), 2 deletions(-)
 
 diff --git a/libavformat/dashdec.c b/libavformat/dashdec.c
-index 03b3a796f8..7350e74094 100644
+index 03b3a796f8..78865edc0e 100644
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
 @@ -216,6 +216,19 @@ static int ishttp(char *url)
@@ -47,25 +64,35 @@ index 03b3a796f8..7350e74094 100644
  static int aligned(int val)
  {
      return ((val + 0x3F) >> 6) << 6;
-@@ -2185,7 +2198,16 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+@@ -2171,6 +2184,7 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+     AVDictionary *opts = NULL;
+     char *url = NULL;
+     int ret = 0;
++    int is_http;
+ 
+     url = av_mallocz(c->max_url_size);
+     if (!url) {
+@@ -2185,7 +2199,18 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
      }
  
 -    if( pls->type == AVMEDIA_TYPE_SUBTITLE )
 +    ff_make_absolute_url(url, c->max_url_size, c->base_url, seg->url);
 +
-+    if (!segment_is_http(url))
++    is_http = segment_is_http(url);
++    if (!is_http)
 +    {
 +        /* the options below are http options. The file protocol has
 +         * a seekable option of its own, which only takes -1 and 0: with
 +         * seekable=1 a local file could not be opened at all. A local file
-+         * is opened with the defaults, as in FFmpeg without these patches. */
++         * is opened with the defaults, as in FFmpeg without these patches;
++         * the start of a byte range is looked up after opening. */
 +    }
 +    else if( pls->type == AVMEDIA_TYPE_SUBTITLE )
      {
          /* disable seeking for subtitles - subtitles are small and many servers doesn't support byterange for subtitles */
          av_dict_set(&opts, "seekable", "0", 0);
-@@ -2205,7 +2227,6 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+@@ -2205,11 +2230,22 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
          av_dict_set(&opts, "multiple_requests", "1", 0);
      }
  
@@ -73,3 +100,33 @@ index 03b3a796f8..7350e74094 100644
      av_log(pls->parent, AV_LOG_VERBOSE, "DASH request for url '%s', offset %"PRId64"\n",
             url, seg->url_offset);
      ret = open_url(pls->parent, &pls->input, url, &c->avio_opts, opts, NULL);
+ 
++    if (ret >= 0 && !is_http && seg->size >= 0 && seg->url_offset > 0) {
++        /* A byte range segment: http starts at the range with the offset
++         * option, the file protocol does not know it and starts at the
++         * beginning of the file. read_from_url() ends the segment after
++         * seg->size bytes. */
++        int64_t pos = avio_seek(pls->input, seg->url_offset, SEEK_SET);
++        if (pos < 0) {
++            ff_format_io_close(pls->parent, &pls->input);
++            ret = pos;
++        }
++    }
++
+ cleanup:
+     av_free(url);
+     av_dict_free(&opts);
+@@ -2337,6 +2373,13 @@ restart:
+     if (ret > 0)
+         goto end;
+ 
++    /* A byte range segment read to its end gives a read of 0 bytes, which
++     * returns 0. For the caller 0 is not an end: a demuxer that skips to
++     * a position behind the data of the segment (a range that is shorter
++     * than the media in it) asked for more forever. */
++    if (!ret)
++        ret = AVERROR_EOF;
++
+     if (c->is_live || v->cur_seq_no < v->last_seq_no) {
+         if (!v->is_restart_needed)
+             v->cur_seq_no++;
