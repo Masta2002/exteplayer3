@@ -3413,6 +3413,14 @@ int32_t container_ffmpeg_update_tracks(Context_t *context, char *filename, int32
                     {
                         track.frame_rate = (uint32_t)(1000 * (int64_t)(rateRational.num) / (int64_t)(rateRational.den));
                     }
+                    /* an average estimated from a few packets can be the tick rate
+                     * of the time base (DASH, 1/200: 200 fps); r_frame_rate holds
+                     * the rate of the manifest then */
+                    if (track.frame_rate > 120000 && stream->r_frame_rate.num > 0 && stream->r_frame_rate.den > 0 &&
+                        1000 * (int64_t)stream->r_frame_rate.num / stream->r_frame_rate.den <= 120000)
+                    {
+                        track.frame_rate = (uint32_t)(1000 * (int64_t)stream->r_frame_rate.num / stream->r_frame_rate.den);
+                    }
 
                     /* fixme: revise this */
                     if (track.frame_rate < 23970)
