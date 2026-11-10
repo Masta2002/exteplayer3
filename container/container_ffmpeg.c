@@ -664,7 +664,8 @@ static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extra
             if (off < 0) {
                 return "A_IPCM";
             }
-            else if (AOT_USAC == m4ac.object_type) {
+            else if (AOT_USAC == m4ac.object_type || AOT_USAC_NOSBR == m4ac.object_type) {
+                // the bundled mpeg4audio.h still has the draft numbers: USAC, object type 42, is AOT_USAC_NOSBR there
                 // xHE-AAC: ADTS has no profile for it, the AAC writer would send it as AAC-LC
                 return "A_IPCM";
             }
