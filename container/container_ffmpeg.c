@@ -1126,7 +1126,8 @@ static void radio_metadata_update(AVFormatContext *av, AVStream *stream,
 
 /* DreamOS live A/V start sync: in live TS audio can trail video by >1 s and
  * Dreambox drops it as late. Hold the output at start until enough audio is
- * buffered (PTS gap + 800 ms). EP3_LIVE_SYNC=0 disables it. */
+ * buffered (PTS gap + 800 ms). On by default on Dreambox only;
+ * EP3_LIVE_SYNC=1 enables it on other boxes, EP3_LIVE_SYNC=0 disables it. */
 #include <time.h>
 static volatile int     ls_state  = 0;   /* 0 not started, 1 holding, 2 done/off */
 /* written by the demuxer thread, read by ls_thread: under ls_pts_mutex,
@@ -1256,11 +1257,18 @@ static void ls_on_video(Context_t *context, int64_t pts)
     if (pts != INVALID_PTS_VALUE) ls_set_pts(&ls_last_v, pts);
     if (ls_state != 0) return;
     const char *env = getenv("EP3_LIVE_SYNC");
-    if ((env && env[0] == '0') || !avContextTab[0] ||
+#ifdef HAVE_DREAMNEXTGEN
+    int enabled = 1;
+#else
+    int enabled = STB_DREAMBOX == GetSTBType();
+#endif
+    if (env)
+        enabled = env[0] != '0';
+    if (!enabled || !avContextTab[0] ||
         (avContextTab[0]->duration != AV_NOPTS_VALUE && avContextTab[0]->duration > 0))
     {
         ffmpeg_printf(10, "live sync bypass: enabled=%d duration_us=%"PRId64"\n",
-                      !(env && env[0] == '0'),
+                      enabled,
                       avContextTab[0] ? avContextTab[0]->duration : AV_NOPTS_VALUE);
         ls_state = 2;
         return;
