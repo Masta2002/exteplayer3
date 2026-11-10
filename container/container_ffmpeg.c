@@ -2811,6 +2811,15 @@ AVIOContext* container_ffmpeg_get_avio_context(CustomIOCtx_t *custom_io, size_t 
 }
 #endif
 
+/* The http protocol of FFmpeg inflates a gzip answer only when built with
+ * zlib and fails the request otherwise. Only a build configured with
+ * --enable-zlib counts; an autodetected zlib does not show in the string. */
+static int ffmpeg_has_zlib(void)
+{
+    const char *cfg = avformat_configuration();
+    return cfg && strstr(cfg, "--enable-zlib") && !strstr(cfg, "--disable-zlib");
+}
+
 int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uint64_t fileSize, char *moovAtomFile, uint64_t moovAtomOffset, int32_t AVIdx)
 {
     int32_t err = 0;
@@ -3105,6 +3114,23 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             av_dict_set(&avio_opts, "max_reload",             "10", 0);
             av_dict_set(&avio_opts, "http_persistent",         "1", 0);
             av_dict_set(&avio_opts, "http_multiple",           "1", 0);
+
+            /* a large live playlist is reloaded every few seconds and comes
+             * much smaller with gzip; FFmpeg asks for it only when told.
+             * Not without zlib, not over an Accept-Encoding of the caller. */
+            AVDictionaryEntry *enc = av_dict_get(avio_opts, "headers", NULL, 0);
+            if (ffmpeg_has_zlib() && (!enc || !enc->value || !av_stristr(enc->value, "Accept-Encoding:")))
+            {
+                if (enc && enc->value && enc->value[0])
+                {
+                    size_t elen = strlen(enc->value);
+                    if (elen < 2 || enc->value[elen - 2] != '\r' || enc->value[elen - 1] != '\n')
+                    {
+                        av_dict_set(&avio_opts, "headers", "\r\n", AV_DICT_APPEND);
+                    }
+                }
+                av_dict_set(&avio_opts, "headers", "Accept-Encoding: gzip\r\n", AV_DICT_APPEND);
+            }
         }
         /* segments behind tracking redirects carry no file extension
          * (FAST channels); the content decides, as in GStreamer. Not only
