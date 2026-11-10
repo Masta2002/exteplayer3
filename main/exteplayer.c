@@ -53,6 +53,7 @@
 #define DUMP_BOOL(x) 0 == x ? "false"  : "true"
 
 extern int ffmpeg_av_dict_set(const char *key, const char *value, int flags);
+extern int  container_ffmpeg_audio_info_gen(void);
 extern void       aac_software_decoder_set(const int32_t val);
 extern void pcm_audio_export_set(int enabled);
 extern void  aac_latm_software_decoder_set(const int32_t val);
@@ -568,6 +569,19 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
     {
         case 'l':
         {
+            /* the audio list has values that change while the track plays */
+            if ('a' == argvBuff[0])
+            {
+                static int audioInfoGenSeen = 0;
+                int audioInfoGen = container_ffmpeg_audio_info_gen();
+
+                if (ptrManager->tracks_cache && audioInfoGenSeen != audioInfoGen)
+                {
+                    strbuffer_free( ptrManager->tracks_cache );
+                    ptrManager->tracks_cache = NULL;
+                }
+                audioInfoGenSeen = audioInfoGen;
+            }
         	if( ptrManager->tracks_cache == NULL )
         	{
         		/* read tracks info into cache */
@@ -575,6 +589,7 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
         		char tmp_str[1024];
         		char enc[128];
         		char name[512];
+        		char desc[64];
 
 				TrackDescription_t *TrackList = NULL;
 				ptrManager->Command(g_player, MANAGER_LIST, &TrackList);
@@ -594,6 +609,8 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
 
 						if ('s' == argvBuff[0])
 							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"f\":%d}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name), TrackList[i].is_forced);
+						else if ('a' == argvBuff[0])
+							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name), TrackList[i].channels, JsonEscape(desc, sizeof(desc), TrackList[i].Description));
 						else
 							snprintf(tmp_str, sizeof(tmp_str), "{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}", TrackList[i].Id, JsonEscape(enc, sizeof(enc), TrackList[i].Encoding), JsonEscape(name, sizeof(name), TrackList[i].Name));
 						strbuffer_add( ptrManager->tracks_cache, tmp_str );
@@ -640,7 +657,9 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 }
                 else if ('a' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , enc, name);
+                    char desc[64];
+
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}}\n", argvBuff[0], argvBuff[1], track->Id , enc, name, track->channels, JsonEscape(desc, sizeof(desc), track->Description));
                 }
                 else // video
                 {
@@ -663,7 +682,7 @@ static int HandleTracks(Manager_t *ptrManager, const PlaybackCmd_t playbackSwitc
                 }
                 else if ('a' == argvBuff[0])
                 {
-                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\"}}\n", argvBuff[0], argvBuff[1], -1, "", "");
+                    E2iSendMsg("{\"%c_%c\":{\"id\":%d,\"e\":\"%s\",\"n\":\"%s\",\"c\":%d,\"d\":\"%s\"}}\n", argvBuff[0], argvBuff[1], -1, "", "", 0, "");
                 }
                 else // video
                 {
