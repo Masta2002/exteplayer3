@@ -4418,7 +4418,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                     ffmpeg_printf(10, "Requesting video track\n");
                     context->manager->video->Command(context, MANAGER_GET_TRACK, &track);
 
-                    if( track )
+                    if( track && track->stream == stream )
                     {
                         ffmpeg_printf(10, "Old duration: %"PRId64"\n", track->duration);
 
@@ -4442,7 +4442,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                 {
                     context->manager->audio->Command(context, MANAGER_GET_TRACK, &track);
 
-                    if( track )
+                    if( track && track->stream == stream )
                     {
                         ffmpeg_printf(10, "Old duration: %"PRId64"\n", track->duration);
 
@@ -4466,7 +4466,7 @@ static int32_t container_ffmpeg_update_duration(Context_t *context)
                 case AVMEDIA_TYPE_SUBTITLE:
                 {
                     context->manager->subtitle->Command(context, MANAGER_GET_TRACK, &track);
-                    if( track )
+                    if( track && track->stream == stream )
                     {
                         ffmpeg_printf(10, "Old duration: %"PRId64"\n", track->duration);
 
