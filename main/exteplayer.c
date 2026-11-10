@@ -335,6 +335,14 @@ static char *map_inter_file_path(const char *filename)
             if((param[idx] == '\0') || (param[idx] == '\n') || (param[idx] == '&'))
                 end = idx;
 
+            /* an '&' before the '=' of this parameter is not its end */
+            if(start != -1 && end != -1 && end <= start)
+                end = -1;
+
+            /* a parameter that does not fit is not one of ours */
+            if(start != -1 && end != -1 && end - start >= 1000)
+                start = end = -1;
+
             if(start != -1 && end != -1)
             {
                 char str[1000];
