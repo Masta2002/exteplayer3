@@ -1368,6 +1368,8 @@ static void FFMPEGThread(Context_t *context)
     int32_t out_channels = 2;
     uint32_t cAVIdx = 0;
     int64_t readErrorSince[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
+    /* the read error that has been reported for the context */
+    int32_t readErrorLogged[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
 
     // for seek
     int64_t seek_target_seconds = 0;
@@ -1476,6 +1478,7 @@ static void FFMPEGThread(Context_t *context)
                 for(; i<IPTV_AV_CONTEXT_MAX_NUM; i+=1)
                 {
                     readErrorSince[i] = 0;
+                    readErrorLogged[i] = 0;
                     multiContextLastPts[i] = INVALID_PTS_VALUE;
                     if(NULL != avContextTab[i])
                     {
@@ -1653,6 +1656,7 @@ static void FFMPEGThread(Context_t *context)
                 avContextTab[cAVIdx]->streams[packet.stream_index],
                 &lastRadioMessage[cAVIdx], context->playback->isVideo);
             readErrorSince[cAVIdx] = 0;
+            readErrorLogged[cAVIdx] = 0;
             int64_t pts = 0;
             int64_t dts = 0;
             Track_t *videoTrack = NULL;
@@ -2483,11 +2487,17 @@ static void FFMPEGThread(Context_t *context)
                     continue;
                 }
             }
+            /* a dead live source fails again every 100 ms: an error is
+             * reported once, and again after a packet, a seek or another
+             * error */
+            int readErrorRepeated = 0;
             if( 0 != ffmpegStatus )
             {
                 static char errbuf[256];
 
-                if( 0 == av_strerror(ffmpegStatus, errbuf, sizeof(errbuf)) )
+                readErrorRepeated = context->playback->isTSLiveMode && ffmpegStatus == readErrorLogged[cAVIdx];
+                readErrorLogged[cAVIdx] = ffmpegStatus;
+                if( !readErrorRepeated && 0 == av_strerror(ffmpegStatus, errbuf, sizeof(errbuf)) )
                 {
                     /* In this way we inform user about error within the core
                      */
@@ -2536,7 +2546,10 @@ static void FFMPEGThread(Context_t *context)
                 }
 
                 // av_read_frame failed
-                ffmpeg_err("no data ->end of file reached ? \n");
+                if (!readErrorRepeated)
+                {
+                    ffmpeg_err("no data ->end of file reached ? \n");
+                }
                 wrapped_packet_unref(&packet);
                 releaseMutex(__FILE__, __FUNCTION__,__LINE__);
                 if( bEndProcess )
