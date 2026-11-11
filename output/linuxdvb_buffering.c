@@ -72,6 +72,7 @@ static pthread_cond_t  bufferingDataConsumedCond;
 static pthread_cond_t  bufferingWriteFinishedCond;
 static pthread_cond_t  bufferingdDataAddedCond;
 static bool hasBufferingThreadStarted = false;
+static bool bufferingCloseRequested = false;
 static BufferingNode_t *bufferingQueueHead = NULL;
 static BufferingNode_t *bufferingQueueTail = NULL;
 
@@ -136,7 +137,7 @@ static void LinuxDvbBuffThread(Context_t *context)
 
     PlaybackDieNowRegisterCallback(WriteWakeUp);
 
-    while (0 == PlaybackDieNow(0))
+    while (0 == PlaybackDieNow(0) && !bufferingCloseRequested)
     {
         pthread_mutex_lock(&bufferingMtx);
         g_bDuringWrite = false;
@@ -159,8 +160,12 @@ static void LinuxDvbBuffThread(Context_t *context)
         {
             assert(bufferingQueueTail == NULL);
 
-            /* Queue is empty we need to wait for data to be added */
-            pthread_cond_wait(&bufferingdDataAddedCond, &bufferingMtx);
+            /* Queue is empty we need to wait for data to be added,
+             * unless the close was requested since the loop condition */
+            if (!bufferingCloseRequested)
+            {
+                pthread_cond_wait(&bufferingdDataAddedCond, &bufferingMtx);
+            }
             pthread_mutex_unlock(&bufferingMtx);
             continue; /* To check PlaybackDieNow(0) */
         }
@@ -266,6 +271,7 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         pthread_cond_init(&bufferingWriteFinishedCond, NULL);
         pthread_cond_init(&bufferingdDataAddedCond, NULL);
 
+        bufferingCloseRequested = false;
         if((error = pthread_create(&bufferingThread, &attr, (void *)&LinuxDvbBuffThread, context)) != 0)
         {
             buff_printf(10, "Creating thread, error:%d:%s\n", error, strerror(error));
@@ -316,6 +322,9 @@ int32_t LinuxDvbBuffClose(Context_t *context)
         WriteWakeUp();
 
         pthread_mutex_lock(&bufferingMtx);
+        /* the thread ends on PlaybackDieNow, which is not set when the
+         * playback could not be started: tell it to end in any case */
+        bufferingCloseRequested = true;
         /* wake up if thread is waiting for data */
         pthread_cond_signal(&bufferingdDataAddedCond);
 
