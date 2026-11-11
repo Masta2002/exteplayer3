@@ -3164,8 +3164,6 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
 //for buffered io
     if(avContextTab[AVIdx] != NULL && avContextTab[AVIdx]->pb != NULL && !context->playback->isTSLiveMode)
     {
-        ffmpeg_real_read_org = avContextTab[AVIdx]->pb->read_packet;
-
         if(0 ==AVIdx && strstr(filename, "://") != 0 &&
            strncmp(filename, "file://", 7) != 0)
         {
@@ -3193,8 +3191,13 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
                 }
             }
         }
-        else if (progressive_playback)
+        else if (progressive_playback &&
+                 (NULL == ffmpeg_real_read_org || ffmpeg_real_read_org == avContextTab[AVIdx]->pb->read_packet))
         {
+            /* the wrapper calls the one saved read function with the
+             * opaque of its own context: an input with another kind of
+             * I/O (a network uri next to a local file) is left alone */
+            ffmpeg_real_read_org = avContextTab[AVIdx]->pb->read_packet;
             avContextTab[AVIdx]->pb->read_packet = ffmpeg_read_wrapper;
         }
     }
@@ -4082,6 +4085,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
     dashAudioResetPending = 0;
     avformat_network_deinit();
     ffmpeg_buf_free();
+    ffmpeg_real_read_org = NULL;
 
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
 
