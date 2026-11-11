@@ -2624,6 +2624,7 @@ typedef struct CustomIOCtx_t
     char *szMoovAtomFile;
     uint64_t iMoovAtomOffset;
     int32_t iOpenWaits;
+    int32_t iOpenWaitsRow;
 } CustomIOCtx_t;
 
 CustomIOCtx_t* custom_io_tab[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
@@ -2686,8 +2687,11 @@ int SAM_ReadFunc(void *ptr, uint8_t *buffer, int lSize)
  * spin on it until the download delivers data. Wait for the data as
  * ffmpeg_read_wrapper does during the playback. The result stays the one
  * of SAM_ReadFunc, and the waits of one open are limited, so a loop that
- * reads a fixed number of bytes at the end still comes to its end. */
+ * reads a fixed number of bytes at the end still comes to its end: not
+ * more than SAM_OPEN_WAIT_ROW waits without new data in between, and not
+ * more than SAM_OPEN_WAIT_MAX waits for one input. */
 #define SAM_OPEN_WAIT_US  100000
+#define SAM_OPEN_WAIT_ROW 100
 #define SAM_OPEN_WAIT_MAX 600
 
 static int SAM_ReadFuncOpen(void *ptr, uint8_t *buffer, int lSize)
@@ -2696,11 +2700,17 @@ static int SAM_ReadFuncOpen(void *ptr, uint8_t *buffer, int lSize)
     int ret = SAM_ReadFunc(ptr, buffer, lSize);
 
     if (0 == ret && lSize > 0 && progressive_playback &&
+        io->iOpenWaitsRow < SAM_OPEN_WAIT_ROW &&
         io->iOpenWaits < SAM_OPEN_WAIT_MAX && 0 == PlaybackDieNow(0))
     {
         io->iOpenWaits += 1;
+        io->iOpenWaitsRow += 1;
         usleep(SAM_OPEN_WAIT_US);
         ret = SAM_ReadFunc(ptr, buffer, lSize);
+    }
+    if (ret > 0)
+    {
+        io->iOpenWaitsRow = 0;
     }
     return ret;
 }
