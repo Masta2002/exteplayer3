@@ -448,7 +448,11 @@ static char *map_inter_file_path(const char *filename)
     }
 
     char *ret = malloc(filename_len);
-    if (!ret) return NULL;
+    if (!ret)
+    {
+        free(filename2);
+        return NULL;
+    }
 
     snprintf(ret, filename_len, "%s%s", filename_prefix, filename);
 
