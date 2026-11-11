@@ -2857,6 +2857,8 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         {
             free(custom_io_tab[AVIdx]);
             custom_io_tab[AVIdx] = NULL;
+            avformat_free_context(avContextTab[AVIdx]);
+            avContextTab[AVIdx] = NULL;
             return cERR_CONTAINER_FFMPEG_OPEN;
         }
     }
