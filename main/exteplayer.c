@@ -134,18 +134,24 @@ static void SendExternalVideo(const char *msg)
 {
     static int fd = -1;
     struct sockaddr_un addr;
+    int sock;
 
+    /* the command loop and the playback thread both report the video
+     * track: one socket under the lock of the messages */
+    flockfile(stderr);
     if (fd < 0)
     {
         fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-        if (fd < 0)
-            return;
     }
+    sock = fd;
+    funlockfile(stderr);
+    if (sock < 0)
+        return;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, EXTERNAL_VIDEO_SOCKET, sizeof(addr.sun_path) - 1);
     /* without enigma2 listening it goes nowhere */
-    (void)sendto(fd, msg, strlen(msg), 0, (struct sockaddr *)&addr, sizeof(addr));
+    (void)sendto(sock, msg, strlen(msg), 0, (struct sockaddr *)&addr, sizeof(addr));
 }
 
 void E2iSendMsg(const char *format, ...)
