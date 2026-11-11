@@ -513,10 +513,17 @@ ssize_t BufferingWriteV(int fd, const struct iovec *iov, int ic)
 
             /* signal that we added some data to queue */
             pthread_cond_signal(&bufferingdDataAddedCond);
+            nodePtr = NULL;
             break;
         }
     }
     pthread_mutex_unlock(&bufferingMtx);
+    if (nodePtr)
+    {
+        /* playback is ending, the chunk was not queued */
+        free(nodePtr);
+        chunkSize -= sizeof(BufferingNode_t);
+    }
     buff_printf(60, "EXIT\n");
     return chunkSize;
 }
