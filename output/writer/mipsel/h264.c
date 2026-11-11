@@ -129,6 +129,13 @@ static int32_t UpdateExtraData(uint8_t **ppExtraData, uint32_t *pExtraDataSize, 
         if (nalType == 7)
         { /* SPS */
 
+            /* the avcC count of the SPS has 5 bits */
+            if (numSps == 31)
+            {
+                h264_err("too many SPS...\n");
+                return -1;
+            }
+
             /* checked before the size is stored: spsIdx is 8 bit wide */
             if (spsIdx + 2 + nalLen >= sizeof(sps))
             {
