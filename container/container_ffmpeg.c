@@ -2816,11 +2816,30 @@ AVIOContext* container_ffmpeg_get_avio_context(CustomIOCtx_t *custom_io, size_t 
     }
     return avio_ctx;
 }
+
+/* libavformat does not free an I/O context it was given */
+static void container_ffmpeg_free_custom_io(int32_t AVIdx, AVIOContext **pb)
+{
+    av_freep(&((*pb)->buffer));
+    av_freep(pb);
+    use_custom_io[AVIdx] = 0;
+
+    if (NULL != custom_io_tab[AVIdx])
+    {
+        if (NULL != custom_io_tab[AVIdx]->pFile)
+            fclose(custom_io_tab[AVIdx]->pFile);
+        if (NULL != custom_io_tab[AVIdx]->pMoovFile)
+            fclose(custom_io_tab[AVIdx]->pMoovFile);
+        free(custom_io_tab[AVIdx]);
+        custom_io_tab[AVIdx] = NULL;
+    }
+}
 #endif
 
 int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uint64_t fileSize, char *moovAtomFile, uint64_t moovAtomOffset, int32_t AVIdx)
 {
     int32_t err = 0;
+    AVIOContext *custom_pb = NULL;
     AVInputFormat *fmt = NULL;
     avContextTab[AVIdx] = avformat_alloc_context();
     if (!avContextTab[AVIdx])
@@ -2851,6 +2870,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         if(avio_ctx)
         {
             avContextTab[AVIdx]->pb = avio_ctx;
+            custom_pb = avio_ctx;
             use_custom_io[AVIdx] = 1;
         }
         else
@@ -3175,6 +3195,14 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             {
                 av_dict_free(&avio_opts);
             }
+#ifdef USE_CUSTOM_IO
+            /* the failed avformat_open_input has freed the format context
+             * only, the I/O context of a local file is still ours */
+            if (custom_pb)
+            {
+                container_ffmpeg_free_custom_io(AVIdx, &custom_pb);
+            }
+#endif
             return cERR_CONTAINER_FFMPEG_OPEN;
         }
     }
@@ -4102,19 +4130,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
                  * avformat_close_input do not expect custom io, so it try
                  * to release incorrectly
                  */
-                av_freep(&(avContextTab[i]->pb->buffer));
-                av_freep(&(avContextTab[i]->pb));
-                use_custom_io[i] = 0;
-
-                if (NULL != custom_io_tab[i])
-                {
-                    if (NULL != custom_io_tab[i]->pFile)
-                        fclose(custom_io_tab[i]->pFile);
-                    if (NULL != custom_io_tab[i]->pMoovFile)
-                        fclose(custom_io_tab[i]->pMoovFile);
-                    free(custom_io_tab[i]);
-                    custom_io_tab[i] = NULL;
-                }
+                container_ffmpeg_free_custom_io(i, &(avContextTab[i]->pb));
             }
             avformat_close_input(&avContextTab[i]);
             avContextTab[i] = NULL;
