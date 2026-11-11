@@ -2761,13 +2761,18 @@ AVIOContext* container_ffmpeg_get_avio_context(CustomIOCtx_t *custom_io, size_t 
     uint8_t *avio_ctx_buffer = NULL;
 
     avio_ctx_buffer = av_malloc(avio_ctx_buffer_size);
-    if (!avio_ctx_buffer)
+    if (avio_ctx_buffer)
     {
-        return NULL;
+        avio_ctx = avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size, 0, custom_io, &SAM_ReadFunc, NULL, &SAM_SeekFunc);
     }
-    avio_ctx = avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size, 0, custom_io, &SAM_ReadFunc, NULL, &SAM_SeekFunc);
     if (!avio_ctx)
     {
+        av_free(avio_ctx_buffer);
+        if (custom_io->pMoovFile)
+        {
+            fclose(custom_io->pMoovFile);
+        }
+        fclose(custom_io->pFile);
         return NULL;
     }
     return avio_ctx;
