@@ -173,7 +173,8 @@ static char *mov_get_text(const char *str, int len)
     {
         if (p_str[i] == '\\' && i + 1 < len && p_str[i + 1] == 'N')
         {
-            *out_ptr++ = '\n';
+            *out_ptr++ = '\\';
+            *out_ptr++ = 'n';
             i += 2;
         }
         else if ((unsigned char)p_str[i] < 0x80 || p_str[i] == ' ')
