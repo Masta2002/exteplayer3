@@ -351,6 +351,44 @@ static int video_allowed(AVStream *stream)
              (!g_h264_max_height || par->height <= g_h264_max_height)));
 }
 
+static char* Codec2Encoding(int32_t codec_id, int32_t media_type, uint8_t *extradata, int extradata_size, int profile, int32_t *version);
+
+/* video is never decoded here: a codec without an encoding (AV1, VVC, ...)
+ * gets no track and no writer, so a variant with it has no picture */
+static int video_has_writer(AVStream *stream)
+{
+    AVCodecParameters *par = get_codecpar(stream);
+    int32_t version = 0;
+    return Codec2Encoding((int32_t)par->codec_id, (int32_t)par->codec_type, par->extradata,
+                          par->extradata_size, par->profile, &version) != NULL;
+}
+
+/* set for the second open of an HLS input: hls_quality_mode is not passed,
+ * the demuxer opens every variant and select_program() chooses */
+static int32_t g_hls_all_variants;
+
+/* With hls_quality_mode the HLS demuxer opens one variant by bandwidth alone
+ * and leaves the programs of the others empty. True when the playlist has
+ * more variants and no video stream of the opened one has a writer. */
+static int hls_preselection_without_writer(AVFormatContext *av)
+{
+    int video = 0;
+    unsigned int i;
+    if (av->nb_programs < 2)
+        return 0;
+    for (i = 0; i < av->nb_streams; i++)
+    {
+        AVStream *stream = av->streams[i];
+        if (get_codecpar(stream)->codec_type != AVMEDIA_TYPE_VIDEO ||
+            (stream->disposition & AV_DISPOSITION_ATTACHED_PIC))
+            continue;
+        if (video_has_writer(stream))
+            return 0;
+        video = 1;
+    }
+    return video;
+}
+
 static int64_t variant_bandwidth(AVDictionary *metadata)
 {
     AVDictionaryEntry *tag = av_dict_get(metadata, "variant_bitrate", NULL, 0);
@@ -373,12 +411,14 @@ static AVProgram *select_program(AVFormatContext *av)
     AVProgram *best = NULL, *audio = NULL;
     int64_t bandwidth = 0;
     int best_sized = 0;
+    int best_writer = 0;
     unsigned int i, j;
     for (i = 0; i < av->nb_programs; i++)
     {
         AVProgram *p = av->programs[i];
         int64_t candidate;
         int has_video = 0, has_audio = 0, sized;
+        int writer;
         if (!p->nb_stream_indexes)
             continue;
         if (g_sel_program_id > 0)
@@ -402,6 +442,16 @@ static AVProgram *select_program(AVFormatContext *av)
                 audio = p;
             continue;
         }
+        /* a program without a writer for its video is taken only when no
+         * program has one */
+        writer = video_has_writer(av->streams[p->stream_index[j]]);
+        if (best && writer != best_writer)
+        {
+            ffmpeg_printf(1, "program %d skipped: no writer for its video codec\n", writer ? best->id : p->id);
+            if (!writer)
+                continue;
+            best = NULL;
+        }
         candidate = variant_bandwidth(p->metadata);
         /* no picture size: the video of this program was never probed
          * (scrambled program of a multi program TS) */
@@ -412,6 +462,7 @@ static AVProgram *select_program(AVFormatContext *av)
             best = p;
             bandwidth = candidate;
             best_sized = sized;
+            best_writer = writer;
         }
     }
     return best ? best : (g_sel_program_id > 0 ? NULL : audio);
@@ -421,14 +472,25 @@ static int select_dash_video(AVFormatContext *av)
 {
     int best = -1;
     int64_t bandwidth = 0, resolution = 0;
+    int best_writer = 0;
     unsigned int i;
     for (i = 0; i < av->nb_streams; i++)
     {
         AVStream *stream = av->streams[i];
         AVCodecParameters *par = get_codecpar(stream);
         int64_t candidate, pixels;
+        int writer;
         if (!video_allowed(stream))
             continue;
+        /* a representation without a writer is taken only when none has one */
+        writer = video_has_writer(stream);
+        if (best >= 0 && writer != best_writer)
+        {
+            ffmpeg_printf(1, "video stream %d skipped: no writer for its codec\n", writer ? best : (int)i);
+            if (!writer)
+                continue;
+            best = -1;
+        }
         candidate = variant_bandwidth(stream->metadata);
         pixels = (int64_t)par->width * par->height;
         if (best < 0 ||
@@ -438,6 +500,7 @@ static int select_dash_video(AVFormatContext *av)
             best = i;
             bandwidth = candidate;
             resolution = pixels;
+            best_writer = writer;
         }
     }
     return best;
@@ -3083,7 +3146,9 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         }
     }
 
-    if (g_sel_program_id <= 0 && !g_h264_max_width && !g_h264_max_height)
+    int hls_preselect = g_sel_program_id <= 0 && !g_h264_max_width && !g_h264_max_height &&
+                        !g_hls_all_variants;
+    if (hls_preselect)
         av_dict_set(&avio_opts, "hls_quality_mode", g_quality_mode == 1 ? "1" : "2", 0);
     if (g_default_audio_only)
         av_dict_set(&avio_opts, "hls_audio_default_only", "1", 0);
@@ -3151,6 +3216,36 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     if (avformat_find_stream_info(avContextTab[AVIdx], NULL) < 0)
     {
         ffmpeg_err("Error avformat_find_stream_info\n");
+    }
+
+    /* The demuxer consumed hls_quality_mode (an option it does not know stays
+     * in the dictionary) and the one variant it opened has no picture here:
+     * open the input once more with all variants. */
+    if (hls_preselect && !av_dict_get(avio_opts, "hls_quality_mode", NULL, 0) &&
+        hls_preselection_without_writer(avContextTab[AVIdx]))
+    {
+        ffmpeg_printf(1, "no writer for the video of the preselected variant, opening all variants\n");
+        av_dict_free(&avio_opts);
+#ifdef USE_CUSTOM_IO
+        if (use_custom_io[AVIdx])
+        {
+            /* as in container_ffmpeg_stop() */
+            av_freep(&(avContextTab[AVIdx]->pb->buffer));
+            av_freep(&(avContextTab[AVIdx]->pb));
+            use_custom_io[AVIdx] = 0;
+            if (custom_io_tab[AVIdx]->pFile)
+                fclose(custom_io_tab[AVIdx]->pFile);
+            if (custom_io_tab[AVIdx]->pMoovFile)
+                fclose(custom_io_tab[AVIdx]->pMoovFile);
+            free(custom_io_tab[AVIdx]);
+            custom_io_tab[AVIdx] = NULL;
+        }
+#endif
+        avformat_close_input(&avContextTab[AVIdx]);
+        g_hls_all_variants = 1;
+        err = container_ffmpeg_init_av_context(context, filename, fileSize, moovAtomFile, moovAtomOffset, AVIdx);
+        g_hls_all_variants = 0;
+        return err;
     }
 
 //for buffered io
