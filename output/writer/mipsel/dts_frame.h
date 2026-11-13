@@ -104,4 +104,24 @@ static inline void dts_core_align(uint8_t *output, size_t padded, const uint8_t 
     }
 }
 
+/*
+ * Whether a framed DTS buffer carries a DTS-HD extension substream (DTS-HD
+ * HRA, DTS-HD MA, DTS:X, DTS Express): it starts with one, or one follows a
+ * 16 bit big endian core frame.
+ */
+static inline int dts_has_hd_extension(const uint8_t *input, size_t size)
+{
+    static const uint8_t exss[4] = { 0x64, 0x58, 0x20, 0x25 };
+    size_t frame_size;
+
+    if (!input || size < 8)
+        return 0;
+    if (!memcmp(input, exss, 4))
+        return 1;
+    if (input[0] != 0x7f || input[1] != 0xfe || input[2] != 0x80 || input[3] != 0x01)
+        return 0;
+    frame_size = (((size_t)input[5] & 0x03) << 12 | (size_t)input[6] << 4 | input[7] >> 4) + 1;
+    return size >= frame_size + 4 && !memcmp(input + frame_size, exss, 4);
+}
+
 #endif
