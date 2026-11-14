@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Static HTTP server with byte ranges for the CI checks of single-file DASH
-(http.server of Python ignores Range). usage: range_server.py <port>"""
+(http.server of Python ignores Range). usage: range_server.py <port> [1.1]
+With 1.1 the server speaks HTTP/1.1 and keeps connections open."""
 import http.server
 import os
 import re
@@ -45,4 +46,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+if len(sys.argv) > 2:
+    Handler.protocol_version = 'HTTP/' + sys.argv[2]
 http.server.ThreadingHTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()

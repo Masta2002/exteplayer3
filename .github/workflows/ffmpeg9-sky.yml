@@ -1,23 +1,49 @@
-name: FFmpeg 9 with the OE-A patches
+name: FFmpeg 9 patch series on release/9.0-patched
 
-# Builds FFmpeg 9.0.2 with the patch series in ffmpeg-patches/ (OE-A's
-# FFmpeg 9 patches plus the ffmpeg-ext ones ported to 9), then exteplayer3
-# against it, and runs small checks of the patched demuxers.
+# Builds the patch series as a git branch: Masta2002/FFmpeg
+# ci/sky-9.0-patched = skyjet18/FFmpeg release/9.0-patched (upstream
+# release/9.0, d838f9f9ae) + 51 commits (OE-A's FFmpeg 9 patches plus the
+# ffmpeg-ext ones ported to 9). Then exteplayer3 against it, and small
+# checks of the patched demuxers; the tree without the series is
+# release/9.0-patched itself.
+# .github/ffmpeg9-tests/ffmpeg-commit holds the commit of the branch that
+# is tested: a new state of the series is a new commit here.
 
 on:
   push:
     paths:
-      - 'ffmpeg-patches/**'
       - '.github/ffmpeg9-tests/**'
-      - '.github/workflows/ffmpeg9-oea.yml'
+      - '.github/workflows/ffmpeg9-sky.yml'
   workflow_dispatch:
+
+env:
+  FF_BASE: d838f9f9aeb0e09b4d068e2af20a46a12640696f
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
     - uses: actions/checkout@v4
+
+    - name: Commit of the series
+      id: pin
+      run: echo "sha=$(cat .github/ffmpeg9-tests/ffmpeg-commit)" >> "$GITHUB_OUTPUT"
+
+    - name: Patched tree (Masta2002/FFmpeg ci/sky-9.0-patched)
+      uses: actions/checkout@v4
+      with:
+        repository: Masta2002/FFmpeg
+        ref: ci/sky-9.0-patched
+        path: ffsrc
+        fetch-depth: 60
+
+    - name: Tree without the series (skyjet18/FFmpeg release/9.0-patched)
+      uses: actions/checkout@v4
+      with:
+        repository: skyjet18/FFmpeg
+        ref: d838f9f9aeb0e09b4d068e2af20a46a12640696f
+        path: ffvan
 
     # Every test command runs under a time limit: a demuxer that does not
     # come back is a failure with a message, not a job that hangs for hours.
@@ -44,16 +70,34 @@ jobs:
           libxml2-dev libssl-dev libbluray-dev librtmp-dev libudfread-dev \
           zlib1g-dev libbz2-dev liblzma-dev libx264-dev
 
-    - name: Patch FFmpeg 9.0.2
+    # The branch is the pinned commit and is the base plus 51 commits. The
+    # later steps take single commits out of the build tree again: their
+    # diffs are written to ffpatches/ under the numbers the patch files had.
+    - name: The series
       run: |
-        mkdir ffsrc && cd ffsrc
-        curl -sL --retry 5 --retry-all-errors https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.0.2.tar.gz -o ff.tar.xz
-        tar -xf ff.tar.xz --strip-components=1
-        while read -r p; do
-          case "$p" in ''|'#'*) continue;; esac
-          echo "== $p"
-          patch -p1 --no-backup-if-mismatch -s < "../ffmpeg-patches/$p"
-        done < ../ffmpeg-patches/series
+        set -eux
+        cd ffsrc
+        test "$(git rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+        test "$(git -C ../ffvan rev-parse HEAD)" = $FF_BASE
+        test "$(git rev-parse HEAD~51)" = $FF_BASE
+        test "$(git rev-list --count $FF_BASE..HEAD)" = 51
+        git log --format='%h %an: %s' $FF_BASE..HEAD
+        git diff --stat $FF_BASE HEAD | tail -1
+        # no line of the series ends in a carriage return
+        test "$(git diff $FF_BASE HEAD | grep -c $'^+.*\r$' || true)" = 0
+        mkdir ../ffpatches
+        one() {
+          c=$(git log --format='%H %s' $FF_BASE..HEAD | awk -v s="$2" 'substr($0, 42) == s { print $1 }')
+          test "$(echo "$c" | wc -w)" = 1
+          git diff $c~ $c > ../ffpatches/$1.diff
+          test -s ../ffpatches/$1.diff
+        }
+        one 0050 'hls: added support for #EXT-X-DISCONTINUITY'
+        one 0051 'avformat/hls: recheck the discard flags during playback and reset a playlist that is switched in'
+        one 0052 'avformat/dashdec: align a representation switched in during playback by media time'
+        one 0053 'fftools/ffmpeg: stream specifiers can select streams by codec'
+        one 0054 'avformat/dashdec: the http options of a segment only for http urls'
+        wc -l ../ffpatches/*.diff
 
     - name: Build FFmpeg
       run: |
@@ -71,6 +115,47 @@ jobs:
           cat tests/data/fate/hls-discontinuity*.err tests/data/fate/hls-discontinuity*.diff 2>/dev/null
           exit 1
         }
+
+    # Upstream 9a9b70bb8c pinned the encoder of the HLS seek fixture to one
+    # thread, its packets depended on the number of CPUs. The fixtures of
+    # the discontinuity tests use the same encoder: generate them on one
+    # CPU and on all and compare. Information, not gating; the fixtures
+    # are generated again as before afterwards.
+    - name: Fixtures of the discontinuity tests and the number of CPUs (information)
+      run: |
+        set +e -ux
+        cd ffsrc
+        export LD_LIBRARY_PATH=$HOME/ffmpeg/lib
+        T="fate-hls-discontinuity fate-hls-discontinuity-seek fate-hls-discontinuity-notag-live"
+        fix() { rm -f tests/data/hls_discontinuity* tests/data/hls_notag_live*; }
+        sums() { (cd tests/data && md5sum hls_discontinuity_*.ts hls_notag_live_*.ts) > ../fix_$1.txt; cat ../fix_$1.txt; }
+        nproc
+        sums all
+        fix
+        TMO=600 tmo taskset -c 0 make $T
+        echo "::notice::discontinuity FATE tests with fixtures generated on one CPU: exit $?"
+        sums one
+        if cmp -s ../fix_all.txt ../fix_one.txt; then
+          echo "::notice::fixtures of the discontinuity tests: the same files on one CPU and on $(nproc)"
+        else
+          echo "::warning::fixtures of the discontinuity tests differ between one CPU and $(nproc)"
+        fi
+        # with the encoder pinned to one thread
+        sed -i 's/-c:v mpeg2video -g 1/-c:v mpeg2video -threads:v 1 -g 1/' tests/fate/hlsenc.mak
+        test "$(grep -c 'mpeg2video -threads:v 1 -g 1' tests/fate/hlsenc.mak)" = 3
+        fix
+        TMO=600 tmo make $T
+        echo "::notice::discontinuity FATE tests with -threads:v 1 in the fixtures and the references as they are: exit $?"
+        sums pinned
+        cmp -s ../fix_all.txt ../fix_pinned.txt && echo "::notice::-threads:v 1 gives the same fixtures as $(nproc) CPUs"
+        cmp -s ../fix_one.txt ../fix_pinned.txt && echo "::notice::-threads:v 1 gives the same fixtures as one CPU"
+        git checkout -- tests/fate/hlsenc.mak
+        fix
+        TMO=600 tmo make $T || exit 1
+        sums again
+        cmp ../fix_all.txt ../fix_again.txt ||
+          echo "::warning::fixtures of the discontinuity tests: two runs on $(nproc) CPUs gave different files"
+        exit 0
 
     # Patch 0053: the tests generate their input with lavfi and need no
     # samples. The build above is not restricted (no --disable-everything),
@@ -111,9 +196,40 @@ jobs:
       run: |
         git clone --depth 1 https://github.com/oe-alliance/exteplayer3 upstream
         cd upstream
+        git log -1 --format='%H %ad %s'
         ./autogen.sh
         PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig ./configure
         make -j$(nproc)
+
+    # skyjet18/exteplayer3 has no build system of its own: the sources of
+    # its tests/build.sh (host build, output to files), against the
+    # installed shared libraries. The job exteplayer3-skyjet below runs
+    # tests/build.sh itself against a static build of the series.
+    - name: Build exteplayer3 of skyjet18 master
+      run: |
+        set -eux
+        git clone --depth 1 https://github.com/skyjet18/exteplayer3 skyjet
+        cd skyjet
+        git log -1 --format='%H %ad %s'
+        grep -n 'EPLAYER3_EXTENDED.*version' main/exteplayer.c
+        gcc -O2 -Werror=implicit-function-declaration -Werror=incompatible-pointer-types -Werror=int-conversion \
+            -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER \
+            -DEXTEPLAYER_FAKE_VIDEO='"/dev/null"' -DEXTEPLAYER_FAKE_AUDIO='"/dev/null"' -DEXTEPLAYER_TERM_SOCKET='""' \
+            -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
+            $(PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig pkg-config --cflags libavformat libavcodec libswresample libswscale libavutil) \
+            main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c \
+            container/container.c container/container_ffmpeg.c \
+            manager/manager.c manager/audio.c manager/video.c manager/subtitle.c \
+            playback/playback.c output/output.c output/output_subtitle.c output/graphic_subtitle.c \
+            output/linuxdvb_fake.c output/linuxdvb_buffering.c \
+            output/writer/common/pes.c output/writer/common/misc.c output/writer/common/writer.c \
+            output/writer/mipsel/*.c external/ffmpeg/src/bitstream.c \
+            external/ffmpeg/src/latmenc.c external/ffmpeg/src/mpeg4audio.c \
+            external/flv2mpeg4/src/*.c external/plugins/src/png.c \
+            $(PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig pkg-config --libs libavformat libavcodec libswresample libswscale libavutil) \
+            -pthread -lm -ldl -o exteplayer3
+        LD_LIBRARY_PATH=$HOME/ffmpeg/lib ldd ./exteplayer3 | grep -E 'libav|libsw'
+        LD_LIBRARY_PATH=$HOME/ffmpeg/lib tmo ./exteplayer3 2>&1 | head -5 || true
 
     - name: Check the patched demuxers
       env:
@@ -266,19 +382,19 @@ jobs:
           echo "::warning::patched build, sfm/short.mpd: local and HTTP differ"
         fi
 
-    # What FFmpeg 9.0.2 without any patch does with the manifests of the
-    # step above, local and over HTTP (demuxers only, built from the same
-    # tarball). Information only, nothing here is gating; a command that
-    # does not come back is ended after 60 seconds.
-    - name: Single-file DASH in FFmpeg 9.0.2 without patches (information)
+    # What release/9.0-patched without the series (d838f9f9ae) does with the
+    # manifests of the step above, local and over HTTP (demuxers only; the
+    # HLS and MPEG-TS ones are for the byte range step at the end).
+    # Information only, nothing here is gating; a command that does not
+    # come back is ended after 60 seconds.
+    - name: Single-file DASH in FFmpeg 9.0 without the series (information)
       run: |
         set +e -ux
-        mkdir ffvan && tar -xf ffsrc/ff.tar.xz --strip-components=1 -C ffvan
         cd ffvan
         ./configure --disable-everything --disable-autodetect --disable-doc --disable-ffplay --disable-ffprobe \
-          --enable-libxml2 --enable-demuxer=dash,mov --enable-protocol=file,http,tcp,pipe --enable-muxer=framecrc \
-          --enable-decoder=aac --enable-parser=aac > /dev/null &&
-        make -j$(nproc) ffmpeg > /dev/null || { echo "::warning::FFmpeg 9.0.2 without patches did not build"; exit 0; }
+          --enable-libxml2 --enable-demuxer=dash,mov,hls,mpegts --enable-protocol=file,http,tcp,pipe --enable-muxer=framecrc \
+          --enable-decoder=aac,mpeg2video,h264 --enable-parser=aac,mpegvideo,mpegaudio,h264 > /dev/null &&
+        make -j$(nproc) ffmpeg > /dev/null || { echo "::warning::FFmpeg 9.0 without the series did not build"; exit 0; }
         cd ../sw
         python3 ../.github/ffmpeg9-tests/range_server.py 8089 &
         SRV=$!
@@ -297,7 +413,7 @@ jobs:
             if [ $rc = 124 ] || [ $rc = 137 ]; then what="NO RETURN, ended after 60 s"; fi
             same="differ from"
             if cmp -s van_${k}_all.txt pat_${k}_all.txt; then same="are the same as"; fi
-            echo "::notice::FFmpeg 9.0.2 without patches, $w $n.mpd: $what, $(grep -vc '^#' van_${k}_all.txt) packets, $(grep -c . van_${k}_all.err) lines of errors; the packets $same those of the patched build ($(grep -vc '^#' pat_${k}_all.txt))"
+            echo "::notice::FFmpeg 9.0 without the series, $w $n.mpd: $what, $(grep -vc '^#' van_${k}_all.txt) packets, $(grep -c . van_${k}_all.err) lines of errors; the packets $same those of the patched build ($(grep -vc '^#' pat_${k}_all.txt))"
           done
         done
         exit 0
@@ -314,11 +430,11 @@ jobs:
         set -eux
         NEW="tmo $HOME/ffmpeg/bin/ffmpeg"; FP="tmo $HOME/ffmpeg/bin/ffprobe"
         cd ffsrc
-        patch -R -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0053-*.patch
+        patch -R -p1 --no-backup-if-mismatch -s < ../ffpatches/0053.diff
         test "$(grep -c stream_specifier_codec fftools/cmdutils.c || true)" = 0
         make -j$(nproc) ffmpeg
         cp ffmpeg ../ffmpeg_old
-        patch -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0053-*.patch
+        patch -p1 --no-backup-if-mismatch -s < ../ffpatches/0053.diff
         make -j$(nproc) ffmpeg
         OLD="tmo $PWD/../ffmpeg_old"
         mkdir ../spec && cd ../spec
@@ -391,7 +507,7 @@ jobs:
         trap 'kill $SRV 2>/dev/null || true' EXIT
         sleep 1
         H=http://127.0.0.1:8089
-        patch -R -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0054-*.patch
+        patch -R -p1 --no-backup-if-mismatch -s < ../ffpatches/0054.diff
         test "$(grep -c segment_is_http libavformat/dashdec.c || true)" = 0
         make -j$(nproc)
         for lib in REF NEW; do
@@ -415,10 +531,10 @@ jobs:
         test "$(grep -vc '^#' ../h54_sfm_all_NEW.txt)" -gt 100
         echo "::notice::patch 0054 over HTTP: the same packets without and with it (sf $(grep -vc '^#' ../h54_sf_all_NEW.txt), sfm $(grep -vc '^#' ../h54_sfm_all_NEW.txt) packets, and with a seek)"
         awk '/^diff --git /{p = ($0 ~ /^diff --git a\/libavformat\/hls\.c /)} p' \
-            ../ffmpeg-patches/0050-*.patch > ../hls0050.diff
+            ../ffpatches/0050.diff > ../hls0050.diff
         test -s ../hls0050.diff
-        patch -R -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0052-*.patch
-        patch -R -p1 --no-backup-if-mismatch -s < ../ffmpeg-patches/0051-*.patch
+        patch -R -p1 --no-backup-if-mismatch -s < ../ffpatches/0052.diff
+        patch -R -p1 --no-backup-if-mismatch -s < ../ffpatches/0051.diff
         patch -R -p1 --no-backup-if-mismatch -s < ../hls0050.diff
         grep -A3 'if (c->first_packet) {' libavformat/hls.c
         make -j$(nproc)
@@ -499,3 +615,212 @@ jobs:
           LD_LIBRARY_PATH=$REF tmo ../track_switch $U 6 far 0.5
         }
         single_file || echo "::warning::single-file DASH: the comparison without the patches failed"
+
+    # release/9.0 reads a run of consecutive byte range segments from one
+    # request (2120a1d626). The discontinuity patch must end such a run at
+    # a #EXT-X-DISCONTINUITY: the two files of the FATE test as ONE file,
+    # every region as two byte range segments, give the packets of the
+    # two-file playlist, with two requests (one per region), local and over
+    # HTTP/1.0 and HTTP/1.1 (kept connections, next segment requested
+    # ahead). A stream without the tag as one run gives the packets of its
+    # separate segments, and those of the tree without the series.
+    # Uses the installed libraries (the build tree is without 0050 to 0052
+    # and 0054 at this point).
+    - name: HLS byte range segments (upstream 2120a1d626) and the discontinuity patch
+      env:
+        LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
+      run: |
+        set -eux
+        PAT="tmo $HOME/ffmpeg/bin/ffmpeg"
+        VAN=""
+        if [ -x ffvan/ffmpeg ]; then VAN="timeout -k 5 60 $PWD/ffvan/ffmpeg"; fi
+        SW=$PWD/sw
+        mkdir br && cd br
+        cp ../ffsrc/tests/data/hls_discontinuity_[01].ts ../ffsrc/tests/data/hls_notag_live_*.ts .
+        python3 ../.github/ffmpeg9-tests/byterange_playlists.py .
+        ls -l
+        cat disc.m3u8 disc_br.m3u8 nt.m3u8 nt_br.m3u8
+        rd()   { "$@" -c copy -fflags +bitexact -f framecrc -; }
+        inp()  { echo "-nostdin -v error -flags +bitexact -i $1"; }
+        reqs() { $PAT -nostdin -v verbose -i $1 -c copy -f null - 2>&1 | grep -c "HLS request for url" || true; }
+        rd $PAT $(inp disc.m3u8)    > disc.txt
+        rd $PAT $(inp disc_br.m3u8) > disc_br.txt
+        rd $PAT $(inp nt.m3u8)      > nt.txt
+        rd $PAT $(inp nt_br.m3u8)   > nt_br.txt
+        cat disc_br.txt
+        test "$(grep -vc '^#' disc.txt)" = 10
+        test "$(grep -vc '^#' nt.txt)" = 15
+        diff -u disc.txt disc_br.txt
+        diff -u nt.txt nt_br.txt
+        r_disc=$(reqs disc_br.m3u8); r_nt=$(reqs nt_br.m3u8)
+        echo "::notice::byte range HLS, local: $r_disc requests for the two regions of disc_br.m3u8, $r_nt for the run of nt_br.m3u8; the packets are those of the separate files"
+        test "$r_disc" = 2
+        test "$r_nt" = 1
+        # seeks: into the first region, to the start of the second one and
+        # into its second byte range segment (not gating)
+        for ss in 0.7 1.2 1.7; do
+          for p in disc disc_br; do
+            $PAT -nostdin -v error -flags +bitexact -ss $ss -i $p.m3u8 -t 0.4 -c copy -fflags +bitexact -f framecrc - > seek_${p}_$ss.txt || true
+          done
+          if cmp -s seek_disc_$ss.txt seek_disc_br_$ss.txt; then
+            echo "::notice::byte range HLS, seek to $ss: the same $(grep -vc '^#' seek_disc_br_$ss.txt) packets as with separate files"
+          else
+            echo "::warning::byte range HLS, seek to $ss: packets differ from the separate files"
+            diff -u seek_disc_$ss.txt seek_disc_br_$ss.txt || true
+          fi
+        done
+        python3 ../.github/ffmpeg9-tests/range_server.py 8090 &
+        SRV0=$!
+        python3 ../.github/ffmpeg9-tests/range_server.py 8091 1.1 &
+        SRV1=$!
+        trap 'kill $SRV0 $SRV1 2>/dev/null || true' EXIT
+        sleep 1
+        for port in 8090 8091; do
+          H=http://127.0.0.1:$port
+          for opt in "" "-http_persistent 0" "-http_multiple 1" "-http_multiple 0"; do
+            for p in disc disc_br nt nt_br; do
+              rd $PAT -nostdin -v error -flags +bitexact $opt -i $H/$p.m3u8 > http.txt
+              diff -u ${p%_br}.txt http.txt
+            done
+          done
+          echo "::notice::byte range HLS over HTTP (port $port, $(curl -sI $H/disc.m3u8 | head -1 | tr -d '\r')): the packets of the local files, $(reqs $H/disc_br.m3u8) requests for disc_br.m3u8, $(reqs $H/nt_br.m3u8) for nt_br.m3u8"
+        done
+        # the tree without the series: the same packets for the stream
+        # without the tag (information)
+        if [ -n "$VAN" ]; then
+          set +e
+          for u in nt.m3u8 nt_br.m3u8 http://127.0.0.1:8090/nt_br.m3u8 http://127.0.0.1:8091/nt_br.m3u8 http://127.0.0.1:8091/nt.m3u8; do
+            rd $VAN $(inp $u) > van.txt 2> van.err
+            rc=$?
+            if cmp -s nt.txt van.txt; then
+              echo "::notice::tree without the series, $u: exit $rc, the same $(grep -vc '^#' van.txt) packets as with the series"
+            else
+              echo "::warning::tree without the series, $u: exit $rc, $(grep -vc '^#' van.txt) packets, they differ from those with the series"
+              tail -3 van.err; diff -u nt.txt van.txt | head -20
+            fi
+          done
+          rd $VAN $(inp disc.m3u8) > van_disc.txt 2> van.err
+          echo "::notice::tree without the series, disc.m3u8 (no discontinuity support there): exit $?, $(grep -vc '^#' van_disc.txt) packets, $(diff disc.txt van_disc.txt | grep -c '^>') of them differ from those with the series"
+          # the HLS stream of the track switch check (H.264 and two AAC
+          # renditions), read through and with a seek
+          cd $SW/hls
+          for t in all seek; do
+            a=""; b=""
+            if [ $t = seek ]; then a="-ss 7.3"; b="-t 4"; fi
+            $PAT -nostdin -v error -flags +bitexact $a -i master.m3u8 -map 0 $b -c copy -fflags +bitexact -f framecrc - > ../../br/swhls_pat_$t.txt 2> /dev/null
+            $VAN -nostdin -v error -flags +bitexact $a -i master.m3u8 -map 0 $b -c copy -fflags +bitexact -f framecrc - > ../../br/swhls_van_$t.txt 2> ../../br/van.err
+            rc=$?
+            if cmp -s ../../br/swhls_pat_$t.txt ../../br/swhls_van_$t.txt; then
+              echo "::notice::tree without the series, HLS with two audio renditions ($t): exit $rc, the same $(grep -vc '^#' ../../br/swhls_van_$t.txt) packets as with the series"
+            else
+              echo "::warning::tree without the series, HLS with two audio renditions ($t): exit $rc, $(grep -vc '^#' ../../br/swhls_van_$t.txt) packets, with the series $(grep -vc '^#' ../../br/swhls_pat_$t.txt); they differ"
+              tail -3 ../../br/van.err; diff -u ../../br/swhls_pat_$t.txt ../../br/swhls_van_$t.txt | head -30
+            fi
+          done
+        else
+          echo "::warning::no ffmpeg of the tree without the series, comparison skipped"
+        fi
+        exit 0
+
+  # skyjet18/exteplayer3 master built the way its tests/build.sh does it:
+  # against a static, out-of-tree build of the series. Its unit tests
+  # (tests/run.sh) run as information.
+  exteplayer3-skyjet:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+    - uses: actions/checkout@v4
+    - name: Commit of the series
+      id: pin
+      run: echo "sha=$(cat .github/ffmpeg9-tests/ffmpeg-commit)" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v4
+      with:
+        repository: Masta2002/FFmpeg
+        ref: ci/sky-9.0-patched
+        path: ffsrc
+    - uses: actions/checkout@v4
+      with:
+        repository: skyjet18/exteplayer3
+        path: skyjet
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential pkg-config nasm libxml2-dev libssl-dev zlib1g-dev
+    - name: Static FFmpeg of the series
+      run: |
+        set -eux
+        test "$(git -C ffsrc rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
+        mkdir ffbuild && cd ffbuild
+        ../ffsrc/configure --disable-autodetect --disable-doc --disable-ffplay \
+          --enable-version3 --enable-libxml2 --enable-openssl --enable-zlib
+        make -j$(nproc)
+    - name: exteplayer3 of skyjet18 master (tests/build.sh)
+      run: |
+        set -eux
+        cd skyjet
+        git log -1 --format='%H %ad %s'
+        grep -n 'EPLAYER3_EXTENDED.*version' main/exteplayer.c
+        export FFMPEG_SOURCE=$GITHUB_WORKSPACE/ffsrc FFMPEG_BUILD=$GITHUB_WORKSPACE/ffbuild
+        export FFMPEG_EXTRA_LIBS="-lxml2 -lssl -lcrypto -lz"
+        export CFLAGS="-O2 -Werror=implicit-function-declaration -Werror=incompatible-pointer-types -Werror=int-conversion"
+        mkdir ../out
+        sh tests/build.sh ../out/exteplayer3-host
+        ls -l ../out
+        ../out/exteplayer3-host 2>&1 | head -5 || true
+    - name: Unit tests of skyjet18/exteplayer3 (information)
+      run: |
+        set +e -ux
+        cd skyjet
+        export FFMPEG_SOURCE=$GITHUB_WORKSPACE/ffsrc FFMPEG_BUILD=$GITHUB_WORKSPACE/ffbuild
+        export FFMPEG_EXTRA_LIBS="-lxml2 -lssl -lcrypto -lz"
+        timeout -k 10 900 sh tests/run.sh
+        rc=$?
+        if [ $rc = 0 ]; then
+          echo "::notice::skyjet18/exteplayer3 tests/run.sh against the series: passed"
+        else
+          echo "::warning::skyjet18/exteplayer3 tests/run.sh against the series: exit $rc"
+        fi
+        exit 0
+
+  # The maintainer builds for old images with an old GCC and glibc (OpenPLi
+  # 4). Not that environment: libavutil, libavcodec and libavformat of the
+  # tree without the series and of the series, natively on x86_64 with the
+  # GCC of the old gcc Docker images, minimal configure. Information: shows
+  # whether both trees pass or fail alike, never fails the run.
+  old-gcc:
+    name: old GCC ${{ matrix.gcc }} (information)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        gcc: ['4.9', '5', '6', '7', '8']
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+      with:
+        repository: skyjet18/FFmpeg
+        ref: d838f9f9aeb0e09b4d068e2af20a46a12640696f
+        path: stock
+    - uses: actions/checkout@v4
+      with:
+        repository: Masta2002/FFmpeg
+        ref: ci/sky-9.0-patched
+        path: series
+    - name: Compile both trees with GCC ${{ matrix.gcc }}
+      run: |
+        set +e -ux
+        git -C stock log -1 --format='%H %s'
+        git -C series log -1 --format='%H %s'
+        docker pull -q gcc:${{ matrix.gcc }} || { echo "::warning::gcc:${{ matrix.gcc }}: image not available"; exit 0; }
+        docker run --rm -v "$PWD:/w" -w /w gcc:${{ matrix.gcc }} sh /w/.github/ffmpeg9-tests/old_gcc.sh stock series
+        for t in stock series; do
+          echo "::notice::GCC ${{ matrix.gcc }}, $t: $(cat $t.result)"
+        done
+        if cmp -s stock.failed series.failed; then
+          echo "::notice::GCC ${{ matrix.gcc }}: the same $(grep -c . stock.failed) files fail to compile in both trees"
+        else
+          echo "::warning::GCC ${{ matrix.gcc }}: the trees differ in the files that fail to compile"
+          diff stock.failed series.failed
+        fi
+        exit 0
