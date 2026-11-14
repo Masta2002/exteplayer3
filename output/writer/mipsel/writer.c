@@ -132,6 +132,11 @@ ssize_t WriteWithRetry(Context_t *context, int pipefd, int fd, void *pDVBMtx, co
         retval = select(maxFd + 1, &rfds, &wfds, NULL, NULL); //&tv);
         if (retval < 0)
         {
+            if (errno == EINTR)
+            {
+                /* nothing was written: wait again for the rest */
+                continue;
+            }
             break;
         }
 
