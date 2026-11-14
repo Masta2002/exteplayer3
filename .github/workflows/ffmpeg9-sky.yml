@@ -383,17 +383,17 @@ jobs:
         fi
 
     # What release/9.0-patched without the series (d838f9f9ae) does with the
-    # manifests of the step above, local and over HTTP (demuxers only; the
-    # HLS and MPEG-TS ones are for the byte range step at the end).
+    # manifests of the step above, local and over HTTP. Its ffmpeg is built
+    # with the components of the patched build (static), so that the byte
+    # range step at the end compares the demuxers and nothing else.
     # Information only, nothing here is gating; a command that does not
     # come back is ended after 60 seconds.
     - name: Single-file DASH in FFmpeg 9.0 without the series (information)
       run: |
         set +e -ux
         cd ffvan
-        ./configure --disable-everything --disable-autodetect --disable-doc --disable-ffplay --disable-ffprobe \
-          --enable-libxml2 --enable-demuxer=dash,mov,hls,mpegts --enable-protocol=file,http,tcp,pipe --enable-muxer=framecrc \
-          --enable-decoder=aac,mpeg2video,h264 --enable-parser=aac,mpegvideo,mpegaudio,h264 > /dev/null &&
+        ./configure --disable-doc --disable-ffplay --disable-ffprobe \
+          --enable-gpl --enable-version3 --enable-libxml2 --enable-openssl --enable-libx264 --enable-zlib > /dev/null &&
         make -j$(nproc) ffmpeg > /dev/null || { echo "::warning::FFmpeg 9.0 without the series did not build"; exit 0; }
         cd ../sw
         python3 ../.github/ffmpeg9-tests/range_server.py 8089 &
@@ -657,17 +657,23 @@ jobs:
         test "$r_disc" = 2
         test "$r_nt" = 1
         # seeks: into the first region, to the start of the second one and
-        # into its second byte range segment (not gating)
+        # into its second byte range segment. A seek starts at a segment,
+        # so the byte range playlist (two segments per region) may start
+        # later than the two-file one, but every packet it gives is one of
+        # the two-file playlist, with the same timestamps.
         for ss in 0.7 1.2 1.7; do
           for p in disc disc_br; do
-            $PAT -nostdin -v error -flags +bitexact -ss $ss -i $p.m3u8 -t 0.4 -c copy -fflags +bitexact -f framecrc - > seek_${p}_$ss.txt || true
+            $PAT -nostdin -v error -flags +bitexact -ss $ss -i $p.m3u8 -t 0.4 -c copy -fflags +bitexact -f framecrc - > seek_${p}_$ss.txt
           done
-          if cmp -s seek_disc_$ss.txt seek_disc_br_$ss.txt; then
-            echo "::notice::byte range HLS, seek to $ss: the same $(grep -vc '^#' seek_disc_br_$ss.txt) packets as with separate files"
-          else
-            echo "::warning::byte range HLS, seek to $ss: packets differ from the separate files"
-            diff -u seek_disc_$ss.txt seek_disc_br_$ss.txt || true
+          grep -v '^#' seek_disc_$ss.txt > two.txt
+          grep -v '^#' seek_disc_br_$ss.txt > one.txt
+          cat one.txt
+          test -s one.txt
+          if ! test "$(grep -vxFf two.txt one.txt | wc -l)" = 0; then
+            diff -u two.txt one.txt || true
+            exit 1
           fi
+          echo "::notice::byte range HLS, seek to $ss: $(grep -c . one.txt) packets, all among the $(grep -c . two.txt) of the two-file playlist with the same timestamps"
         done
         python3 ../.github/ffmpeg9-tests/range_server.py 8090 &
         SRV0=$!
@@ -689,6 +695,17 @@ jobs:
         # without the tag (information)
         if [ -n "$VAN" ]; then
           set +e
+          # what differs between two framecrc outputs: $1 with the series, $2 without
+          differ() {
+            if cmp -s <(grep -v '^#' $1 | cut -d, -f1,5-) <(grep -v '^#' $2 | cut -d, -f1,5-); then
+              echo "same packets (stream, size, checksum), timestamps or header lines differ"
+            else
+              echo "packets differ"
+            fi
+            diff <(grep '^#' $1) <(grep '^#' $2)
+            diff <(grep -v '^#' $1) <(grep -v '^#' $2) | grep '^<' | head -8
+            diff <(grep -v '^#' $1) <(grep -v '^#' $2) | grep '^>' | head -8
+          }
           for u in nt.m3u8 nt_br.m3u8 http://127.0.0.1:8090/nt_br.m3u8 http://127.0.0.1:8091/nt_br.m3u8 http://127.0.0.1:8091/nt.m3u8; do
             rd $VAN $(inp $u) > van.txt 2> van.err
             rc=$?
@@ -696,7 +713,7 @@ jobs:
               echo "::notice::tree without the series, $u: exit $rc, the same $(grep -vc '^#' van.txt) packets as with the series"
             else
               echo "::warning::tree without the series, $u: exit $rc, $(grep -vc '^#' van.txt) packets, they differ from those with the series"
-              tail -3 van.err; diff -u nt.txt van.txt | head -20
+              tail -3 van.err; differ nt.txt van.txt
             fi
           done
           rd $VAN $(inp disc.m3u8) > van_disc.txt 2> van.err
@@ -714,7 +731,7 @@ jobs:
               echo "::notice::tree without the series, HLS with two audio renditions ($t): exit $rc, the same $(grep -vc '^#' ../../br/swhls_van_$t.txt) packets as with the series"
             else
               echo "::warning::tree without the series, HLS with two audio renditions ($t): exit $rc, $(grep -vc '^#' ../../br/swhls_van_$t.txt) packets, with the series $(grep -vc '^#' ../../br/swhls_pat_$t.txt); they differ"
-              tail -3 ../../br/van.err; diff -u ../../br/swhls_pat_$t.txt ../../br/swhls_van_$t.txt | head -30
+              tail -3 ../../br/van.err; differ ../../br/swhls_pat_$t.txt ../../br/swhls_van_$t.txt
             fi
           done
         else
@@ -783,7 +800,7 @@ jobs:
         exit 0
 
   # The maintainer builds for old images with an old GCC and glibc (OpenPLi
-  # 4). Not that environment: libavutil, libavcodec and libavformat of the
+  # 4). Not that environment: the libraries and programs of the
   # tree without the series and of the series, natively on x86_64 with the
   # GCC of the old gcc Docker images, minimal configure. Information: shows
   # whether both trees pass or fail alike, never fails the run.

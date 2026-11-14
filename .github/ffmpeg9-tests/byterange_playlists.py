@@ -13,18 +13,38 @@ usage: byterange_playlists.py <dir with the copied fixtures>
   nt.m3u8       the segments of the tag-less stream as files (VOD)
   nt_br.m3u8    the same as one file (nt_all.ts), every segment as two byte
                 range segments: one run over the whole file
+
+A file is split in front of a video frame (with the PAT/PMT packets that
+precede it), and the durations of the two parts are those of their frames,
+so that the playlist describes the content exactly.
 """
 import os
 import re
 import sys
 
 d = sys.argv[1]
+FRAME = 0.2  # the fixtures have 5 frames per second
+TABLES = (0x0000, 0x0011, 0x1000)  # PAT, SDT, PMT of the mpegts muxer
 
 
-def halves(size):
-    # whole transport stream packets in both parts
-    first = size // 2 // 188 * 188
-    return [first, size - first]
+def parts(data):
+    """[(size, frames)] of the two parts of a transport stream."""
+    assert len(data) % 188 == 0, len(data)
+    pid, start = [], []
+    for i in range(0, len(data), 188):
+        assert data[i] == 0x47
+        pid.append((data[i + 1] & 0x1f) << 8 | data[i + 2])
+        start.append(bool(data[i + 1] & 0x40))
+    video = [p for p in set(pid) if p not in TABLES]
+    assert len(video) == 1, video
+    frames = [i for i in range(len(pid)) if pid[i] == video[0] and start[i]]
+    assert len(frames) >= 2, frames
+    k = len(frames) // 2
+    cut = frames[k]
+    while cut > 0 and pid[cut - 1] in TABLES:
+        cut -= 1
+    assert cut > 0
+    return [(cut * 188, k), (len(data) - cut * 188, len(frames) - k)]
 
 
 def write(name, lines):
@@ -42,14 +62,15 @@ def build(prefix, files, sequence, extra, discontinuity):
         for i, name in enumerate(files):
             with open(os.path.join(d, name), 'rb') as f:
                 data = f.read()
-            assert len(data) % 188 == 0 and len(data) >= 2 * 188, name
             out.write(data)
             if discontinuity and i:
                 plain.append('#EXT-X-DISCONTINUITY')
                 ranges.append('#EXT-X-DISCONTINUITY')
-            plain += ['#EXTINF:1.0,', name]
-            for size in halves(len(data)):
-                ranges += ['#EXTINF:0.5,', '#EXT-X-BYTERANGE:%d@%d' % (size, offset),
+            two = parts(data)
+            plain += ['#EXTINF:%.1f,' % (FRAME * (two[0][1] + two[1][1])), name]
+            for size, frames in two:
+                ranges += ['#EXTINF:%.1f,' % (FRAME * frames),
+                           '#EXT-X-BYTERANGE:%d@%d' % (size, offset),
                            prefix + '_all.ts']
                 offset += size
     write(prefix + '.m3u8', plain + ['#EXT-X-ENDLIST'])
