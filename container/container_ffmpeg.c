@@ -1368,6 +1368,8 @@ static void FFMPEGThread(Context_t *context)
     int32_t out_channels = 2;
     uint32_t cAVIdx = 0;
     int64_t readErrorSince[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
+    /* the read error that has been reported for the context */
+    int32_t readErrorLogged[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
 
     // for seek
     int64_t seek_target_seconds = 0;
@@ -1476,6 +1478,7 @@ static void FFMPEGThread(Context_t *context)
                 for(; i<IPTV_AV_CONTEXT_MAX_NUM; i+=1)
                 {
                     readErrorSince[i] = 0;
+                    readErrorLogged[i] = 0;
                     multiContextLastPts[i] = INVALID_PTS_VALUE;
                     if(NULL != avContextTab[i])
                     {
@@ -1653,6 +1656,7 @@ static void FFMPEGThread(Context_t *context)
                 avContextTab[cAVIdx]->streams[packet.stream_index],
                 &lastRadioMessage[cAVIdx], context->playback->isVideo);
             readErrorSince[cAVIdx] = 0;
+            readErrorLogged[cAVIdx] = 0;
             int64_t pts = 0;
             int64_t dts = 0;
             Track_t *videoTrack = NULL;
@@ -2483,11 +2487,17 @@ static void FFMPEGThread(Context_t *context)
                     continue;
                 }
             }
+            /* a dead live source fails again every 100 ms: an error is
+             * reported once, and again after a packet, a seek or another
+             * error */
+            int readErrorRepeated = 0;
             if( 0 != ffmpegStatus )
             {
                 static char errbuf[256];
 
-                if( 0 == av_strerror(ffmpegStatus, errbuf, sizeof(errbuf)) )
+                readErrorRepeated = context->playback->isTSLiveMode && ffmpegStatus == readErrorLogged[cAVIdx];
+                readErrorLogged[cAVIdx] = ffmpegStatus;
+                if( !readErrorRepeated && 0 == av_strerror(ffmpegStatus, errbuf, sizeof(errbuf)) )
                 {
                     /* In this way we inform user about error within the core
                      */
@@ -2536,7 +2546,10 @@ static void FFMPEGThread(Context_t *context)
                 }
 
                 // av_read_frame failed
-                ffmpeg_err("no data ->end of file reached ? \n");
+                if (!readErrorRepeated)
+                {
+                    ffmpeg_err("no data ->end of file reached ? \n");
+                }
                 wrapped_packet_unref(&packet);
                 releaseMutex(__FILE__, __FUNCTION__,__LINE__);
                 if( bEndProcess )
@@ -2610,6 +2623,8 @@ typedef struct CustomIOCtx_t
     uint64_t iFileSize;
     char *szMoovAtomFile;
     uint64_t iMoovAtomOffset;
+    int32_t iOpenWaits;
+    int32_t iOpenWaitsRow;
 } CustomIOCtx_t;
 
 CustomIOCtx_t* custom_io_tab[IPTV_AV_CONTEXT_MAX_NUM] = {NULL, NULL};
@@ -2662,6 +2677,40 @@ int SAM_ReadFunc(void *ptr, uint8_t *buffer, int lSize)
         if (ferror(io->pFile) || (io->pMoovFile && ferror(io->pMoovFile)))
             return AVERROR(errno ? errno : EIO);
         return AVERROR_EOF;
+    }
+    return ret;
+}
+
+/* Read function while a progressive file is opened. At the end of a file
+ * that still grows SAM_ReadFunc returns 0, and libavformat asks again at
+ * once: avio_read and the resync loops of the matroska and avi demuxers
+ * spin on it until the download delivers data. Wait for the data as
+ * ffmpeg_read_wrapper does during the playback. The result stays the one
+ * of SAM_ReadFunc, and the waits of one open are limited, so a loop that
+ * reads a fixed number of bytes at the end still comes to its end: not
+ * more than SAM_OPEN_WAIT_ROW waits without new data in between, and not
+ * more than SAM_OPEN_WAIT_MAX waits for one input. */
+#define SAM_OPEN_WAIT_US  100000
+#define SAM_OPEN_WAIT_ROW 100
+#define SAM_OPEN_WAIT_MAX 600
+
+static int SAM_ReadFuncOpen(void *ptr, uint8_t *buffer, int lSize)
+{
+    CustomIOCtx_t *io = (CustomIOCtx_t *)ptr;
+    int ret = SAM_ReadFunc(ptr, buffer, lSize);
+
+    if (0 == ret && lSize > 0 && progressive_playback &&
+        io->iOpenWaitsRow < SAM_OPEN_WAIT_ROW &&
+        io->iOpenWaits < SAM_OPEN_WAIT_MAX && 0 == PlaybackDieNow(0))
+    {
+        io->iOpenWaits += 1;
+        io->iOpenWaitsRow += 1;
+        usleep(SAM_OPEN_WAIT_US);
+        ret = SAM_ReadFunc(ptr, buffer, lSize);
+    }
+    if (ret > 0)
+    {
+        io->iOpenWaitsRow = 0;
     }
     return ret;
 }
@@ -2761,22 +2810,46 @@ AVIOContext* container_ffmpeg_get_avio_context(CustomIOCtx_t *custom_io, size_t 
     uint8_t *avio_ctx_buffer = NULL;
 
     avio_ctx_buffer = av_malloc(avio_ctx_buffer_size);
-    if (!avio_ctx_buffer)
+    if (avio_ctx_buffer)
     {
-        return NULL;
+        avio_ctx = avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size, 0, custom_io, progressive_playback ? &SAM_ReadFuncOpen : &SAM_ReadFunc, NULL, &SAM_SeekFunc);
     }
-    avio_ctx = avio_alloc_context(avio_ctx_buffer, avio_ctx_buffer_size, 0, custom_io, &SAM_ReadFunc, NULL, &SAM_SeekFunc);
     if (!avio_ctx)
     {
+        av_free(avio_ctx_buffer);
+        if (custom_io->pMoovFile)
+        {
+            fclose(custom_io->pMoovFile);
+        }
+        fclose(custom_io->pFile);
         return NULL;
     }
     return avio_ctx;
+}
+
+/* libavformat does not free an I/O context it was given */
+static void container_ffmpeg_free_custom_io(int32_t AVIdx, AVIOContext **pb)
+{
+    av_freep(&((*pb)->buffer));
+    av_freep(pb);
+    use_custom_io[AVIdx] = 0;
+
+    if (NULL != custom_io_tab[AVIdx])
+    {
+        if (NULL != custom_io_tab[AVIdx]->pFile)
+            fclose(custom_io_tab[AVIdx]->pFile);
+        if (NULL != custom_io_tab[AVIdx]->pMoovFile)
+            fclose(custom_io_tab[AVIdx]->pMoovFile);
+        free(custom_io_tab[AVIdx]);
+        custom_io_tab[AVIdx] = NULL;
+    }
 }
 #endif
 
 int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uint64_t fileSize, char *moovAtomFile, uint64_t moovAtomOffset, int32_t AVIdx)
 {
     int32_t err = 0;
+    AVIOContext *custom_pb = NULL;
     AVInputFormat *fmt = NULL;
     avContextTab[AVIdx] = avformat_alloc_context();
     if (!avContextTab[AVIdx])
@@ -2807,12 +2880,15 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         if(avio_ctx)
         {
             avContextTab[AVIdx]->pb = avio_ctx;
+            custom_pb = avio_ctx;
             use_custom_io[AVIdx] = 1;
         }
         else
         {
             free(custom_io_tab[AVIdx]);
             custom_io_tab[AVIdx] = NULL;
+            avformat_free_context(avContextTab[AVIdx]);
+            avContextTab[AVIdx] = NULL;
             return cERR_CONTAINER_FFMPEG_OPEN;
         }
     }
@@ -2909,6 +2985,15 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             char *baseUri = strdup(filename);
             char *token  = NULL;
 
+            if (!baseUri)
+            {
+                ffmpeg_err("cannot allocate the rtmp uri\n");
+                av_dict_free(&avio_opts);
+                avformat_free_context(avContextTab[AVIdx]);
+                avContextTab[AVIdx] = NULL;
+                return cERR_CONTAINER_FFMPEG_NOMEM;
+            }
+
             // check if uri have additional params
             if ((token = strtok(baseUri, " ")) != NULL )
             {
@@ -2916,6 +3001,18 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
                 char *swfUrl = malloc(strlen(filename));
                 char *swfVfy = malloc(strlen(filename));
                 char *poseq, *key, *value;
+                if (!conn || !swfUrl || !swfVfy)
+                {
+                    ffmpeg_err("cannot allocate the rtmp parameters\n");
+                    free(conn);
+                    free(swfUrl);
+                    free(swfVfy);
+                    free(baseUri);
+                    av_dict_free(&avio_opts);
+                    avformat_free_context(avContextTab[AVIdx]);
+                    avContextTab[AVIdx] = NULL;
+                    return cERR_CONTAINER_FFMPEG_NOMEM;
+                }
                 conn[0] = '\0';
                 swfUrl[0] = '\0';
                 swfVfy[0] = '\0';
@@ -3021,6 +3118,15 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             if (2 == haveNativeProto)
             {
                 filename = malloc(strlen(baseUri) + 2 + 1);
+                if (!filename)
+                {
+                    ffmpeg_err("cannot allocate the rtmp uri\n");
+                    free(baseUri);
+                    av_dict_free(&avio_opts);
+                    avformat_free_context(avContextTab[AVIdx]);
+                    avContextTab[AVIdx] = NULL;
+                    return cERR_CONTAINER_FFMPEG_NOMEM;
+                }
                 strncpy(filename, "ff", 2);
                 strcpy(filename+2, baseUri);
                 free(baseUri);
@@ -3129,10 +3235,20 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             {
                 av_dict_free(&avio_opts);
             }
-            releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+#ifdef USE_CUSTOM_IO
+            /* the failed avformat_open_input has freed the format context
+             * only, the I/O context of a local file is still ours */
+            if (custom_pb)
+            {
+                container_ffmpeg_free_custom_io(AVIdx, &custom_pb);
+            }
+#endif
             return cERR_CONTAINER_FFMPEG_OPEN;
         }
     }
+
+    /* the options no one has taken are left in the dictionary */
+    av_dict_free(&avio_opts);
 
     if (AVIdx == 0)
         context->playback->isDash = avContextTab[0]->iformat &&
@@ -3154,11 +3270,18 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         ffmpeg_err("Error avformat_find_stream_info\n");
     }
 
+#ifdef USE_CUSTOM_IO
+    /* opened: from here on the plain read function, as before */
+    if (avContextTab[AVIdx] != NULL && avContextTab[AVIdx]->pb != NULL &&
+        avContextTab[AVIdx]->pb->read_packet == SAM_ReadFuncOpen)
+    {
+        avContextTab[AVIdx]->pb->read_packet = SAM_ReadFunc;
+    }
+#endif
+
 //for buffered io
     if(avContextTab[AVIdx] != NULL && avContextTab[AVIdx]->pb != NULL && !context->playback->isTSLiveMode)
     {
-        ffmpeg_real_read_org = avContextTab[AVIdx]->pb->read_packet;
-
         if(0 ==AVIdx && strstr(filename, "://") != 0 &&
            strncmp(filename, "file://", 7) != 0)
         {
@@ -3186,8 +3309,13 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
                 }
             }
         }
-        else if (progressive_playback)
+        else if (progressive_playback &&
+                 (NULL == ffmpeg_real_read_org || ffmpeg_real_read_org == avContextTab[AVIdx]->pb->read_packet))
         {
+            /* the wrapper calls the one saved read function with the
+             * opaque of its own context: an input with another kind of
+             * I/O (a network uri next to a local file) is left alone */
+            ffmpeg_real_read_org = avContextTab[AVIdx]->pb->read_packet;
             avContextTab[AVIdx]->pb->read_packet = ffmpeg_read_wrapper;
         }
     }
@@ -3229,7 +3357,6 @@ int32_t container_ffmpeg_init(Context_t *context, PlayFiles_t *playFilesNames)
     if (isContainerRunning)
     {
         ffmpeg_err("ups already running?\n");
-        releaseMutex(__FILE__, __FUNCTION__,__LINE__);
         return cERR_CONTAINER_FFMPEG_RUNNING;
     }
 
@@ -4043,19 +4170,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
                  * avformat_close_input do not expect custom io, so it try
                  * to release incorrectly
                  */
-                av_freep(&(avContextTab[i]->pb->buffer));
-                av_freep(&(avContextTab[i]->pb));
-                use_custom_io[i] = 0;
-
-                if (NULL != custom_io_tab[i])
-                {
-                    if (NULL != custom_io_tab[i]->pFile)
-                        fclose(custom_io_tab[i]->pFile);
-                    if (NULL != custom_io_tab[i]->pMoovFile)
-                        fclose(custom_io_tab[i]->pMoovFile);
-                    free(custom_io_tab[i]);
-                    custom_io_tab[i] = NULL;
-                }
+                container_ffmpeg_free_custom_io(i, &(avContextTab[i]->pb));
             }
             avformat_close_input(&avContextTab[i]);
             avContextTab[i] = NULL;
@@ -4076,6 +4191,7 @@ static int32_t container_ffmpeg_stop(Context_t *context)
     dashAudioResetPending = 0;
     avformat_network_deinit();
     ffmpeg_buf_free();
+    ffmpeg_real_read_org = NULL;
 
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
 
