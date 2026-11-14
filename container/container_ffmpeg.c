@@ -962,6 +962,43 @@ static char* searchMeta(void * metadata, char* ourTag)
 /* Worker Thread                */
 /* **************************** */
 
+/* Stall watchdog of http(s) contexts: one av_read_frame() that runs longer
+ * than the limit of its context is ended through the interrupt callback.
+ * A limit of 0 means not armed. 32 bit values only: the callback can run in
+ * another thread, which must not see half of a 64 bit value. */
+static uint32_t readStallLimitMs[IPTV_AV_CONTEXT_MAX_NUM] = {0, 0};
+static volatile uint32_t readStallStartMs = 0;
+static volatile uint32_t readStallActiveMs = 0; /* limit of the running read */
+static volatile uint32_t readStallFired = 0;    /* the callback ended a call */
+
+static uint32_t read_stall_now_ms(void)
+{
+    return (uint32_t)(av_gettime_relative() / 1000);
+}
+
+/* The same bound for the calls that open a context, avformat_open_input()
+ * and avformat_find_stream_info(): each gets the limit for itself. With pb
+ * the clock restarts whenever that context has read from its connection, so
+ * the limit is on the time without a byte. pb must stay valid until
+ * read_stall_disarm(); both are used by the opening thread only. */
+static AVIOContext *readStallPb = NULL;
+static uint32_t readStallBytes = 0;
+
+static void read_stall_arm(uint32_t limit, AVIOContext *pb)
+{
+    readStallFired = 0;
+    readStallPb = pb;
+    readStallBytes = pb ? (uint32_t)pb->bytes_read : 0;
+    readStallStartMs = read_stall_now_ms();
+    readStallActiveMs = limit;
+}
+
+static void read_stall_disarm(void)
+{
+    readStallActiveMs = 0;
+    readStallPb = NULL;
+}
+
 static int network_read_retry(int64_t start, int64_t now)
 {
     return now >= start && now - start < 10 * AV_TIME_BASE;
@@ -1647,7 +1684,15 @@ static void FFMPEGThread(Context_t *context)
 
         if( !isWaitingForFinish )
         {
+            readStallStartMs = read_stall_now_ms();
+            readStallActiveMs = readStallLimitMs[cAVIdx];
             ffmpegStatus = av_read_frame(avContextTab[cAVIdx], &packet);
+            if (ffmpegStatus < 0 && readStallActiveMs &&
+                read_stall_now_ms() - readStallStartMs > readStallActiveMs)
+            {
+                ffmpeg_err("no packet for more than %u s, read ended (%d)\n", readStallActiveMs / 1000, ffmpegStatus);
+            }
+            readStallActiveMs = 0;
         }
 
         if (!isWaitingForFinish && (ffmpegStatus == 0) )
@@ -2609,6 +2654,31 @@ static int32_t terminating = 0;
 static int32_t interrupt_cb(void *ctx)
 {
     PlaybackHandler_t *p = (PlaybackHandler_t *)ctx;
+    /* rw_timeout bounds one wait on a socket, not the time a demuxer spends
+     * in one read: HLS skips a segment that fails and loads the next one,
+     * http reconnects, all without returning */
+    uint32_t limit = readStallActiveMs;
+    if (limit)
+    {
+        uint32_t now = read_stall_now_ms();
+        AVIOContext *pb = readStallPb;
+        if (pb && !readStallFired && (uint32_t)pb->bytes_read != readStallBytes)
+        {
+            /* stream probing: data still arrives */
+            readStallBytes = (uint32_t)pb->bytes_read;
+            readStallStartMs = now;
+        }
+        if (p->isPaused)
+        {
+            /* the time in pause does not count */
+            readStallStartMs = now;
+        }
+        else if (now - readStallStartMs > limit)
+        {
+            readStallFired = 1;
+            return 1;
+        }
+    }
     return p->abortRequested || PlaybackDieNow(0);
 }
 
@@ -2846,6 +2916,32 @@ static void container_ffmpeg_free_custom_io(int32_t AVIdx, AVIOContext **pb)
 }
 #endif
 
+/* The http protocol of FFmpeg inflates a gzip answer only when built with
+ * zlib and fails the request otherwise. Only a build configured with
+ * --enable-zlib counts; an autodetected zlib does not show in the string. */
+static int ffmpeg_has_zlib(void)
+{
+    const char *cfg = avformat_configuration();
+    return cfg && strstr(cfg, "--enable-zlib") && !strstr(cfg, "--disable-zlib");
+}
+
+/* The watchdog ended a call of the open phase although the context is still
+ * there. Its reads were cut off at an unknown point, so it is given up like
+ * a context that did not open. Closed before the watchdog is taken off: the
+ * close then does not wait for the network either. */
+static int32_t open_stalled(int32_t AVIdx, const char *what)
+{
+    char error[512];
+
+    ffmpeg_err("%s not finished after %u s, ended\n", what, readStallLimitMs[AVIdx] / 1000);
+    readStallPb = NULL;
+    avformat_close_input(&avContextTab[AVIdx]);
+    read_stall_disarm();
+    av_strerror(AVERROR(ETIMEDOUT), error, 512);
+    E2iSendMsg("{\"FF_ERROR\":{\"msg\":\"%s\",\"code\":%i}}\n", error, AVERROR(ETIMEDOUT));
+    return cERR_CONTAINER_FFMPEG_OPEN;
+}
+
 int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uint64_t fileSize, char *moovAtomFile, uint64_t moovAtomOffset, int32_t AVIdx)
 {
     int32_t err = 0;
@@ -2897,6 +2993,7 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
     AVDictionary *avio_opts = NULL;
     AVDictionary **pavio_opts = NULL;
     av_dict_copy(&avio_opts, g_avio_opts, 0);
+    readStallLimitMs[AVIdx] = 0;
 
     eRTMPProtoImplType rtmpProtoImplType = RTMP_NONE;
     uint8_t numOfRTMPImpl = 0;
@@ -3149,6 +3246,13 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         /* the HLS and DASH demuxers pass rw_timeout, not timeout, on to the
          * connections of their segments and playlists */
         av_dict_set(&avio_opts, "rw_timeout", num, 0);
+        /* a read that returns nothing for 3x the timeout, at least 60 s, is
+         * ended; a timeout of 0 (none) leaves that off as well */
+        if (context->playback->httpTimeout)
+        {
+            uint64_t limit = (uint64_t)context->playback->httpTimeout * 3;
+            readStallLimitMs[AVIdx] = limit < 60000 ? 60000 : limit > INT32_MAX ? INT32_MAX : (uint32_t)limit;
+        }
         av_dict_set(&avio_opts, "reconnect", "1", 0);
         if (context->playback->isTSLiveMode) // special mode for live TS stream with skip packet
         {
@@ -3166,11 +3270,34 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
             av_dict_set(&avio_opts, "max_reload",             "10", 0);
             av_dict_set(&avio_opts, "http_persistent",         "1", 0);
             av_dict_set(&avio_opts, "http_multiple",           "1", 0);
-            /* segments behind tracking redirects carry no file extension
-             * (FAST channels); the content decides, as in GStreamer */
-            av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
-            av_dict_set(&avio_opts, "extension_picky",          "0", 0);
+
+            /* a large live playlist is reloaded every few seconds and comes
+             * much smaller with gzip; FFmpeg asks for it only when told.
+             * Not without zlib, not over an Accept-Encoding of the caller. */
+            AVDictionaryEntry *enc = av_dict_get(avio_opts, "headers", NULL, 0);
+            if (ffmpeg_has_zlib() && (!enc || !enc->value || !av_stristr(enc->value, "Accept-Encoding:")))
+            {
+                if (enc && enc->value && enc->value[0])
+                {
+                    size_t elen = strlen(enc->value);
+                    if (elen < 2 || enc->value[elen - 2] != '\r' || enc->value[elen - 1] != '\n')
+                    {
+                        av_dict_set(&avio_opts, "headers", "\r\n", AV_DICT_APPEND);
+                    }
+                }
+                av_dict_set(&avio_opts, "headers", "Accept-Encoding: gzip\r\n", AV_DICT_APPEND);
+            }
         }
+        /* segments behind tracking redirects carry no file extension
+         * (FAST channels); the content decides, as in GStreamer. Not only
+         * for urls with .m3u: a playlist is found by its content type too
+         * (.php?id=, a token path), its segments are named just as freely.
+         * Options of the HLS demuxer only, the others leave them unused. */
+        av_dict_set(&avio_opts, "allowed_segment_extensions", "ALL", 0);
+        av_dict_set(&avio_opts, "extension_picky",          "0", 0);
+        /* a segment that fails to open is asked for again before the
+         * demuxer skips it (default: skipped at the first failure) */
+        av_dict_set(&avio_opts, "seg_max_retry",            "3", 0);
 
         if( strncmp(filename, "http://127.0.0.1", 16) == 0 )
         {
@@ -3212,6 +3339,11 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
 
 
     av_dict_set(&avio_opts, "dash_subtitle_default_discard", "1", 0);
+    /* http only (limit 0 otherwise). With reconnect=1 one read of a server
+     * that went silent is retried by http.c for more than three minutes,
+     * and the demuxers read more than once. The whole call is bounded:
+     * while it runs the context can be freed under the callback. */
+    read_stall_arm(readStallLimitMs[AVIdx], NULL);
     if ((err = avformat_open_input(&avContextTab[AVIdx], filename, fmt, pavio_opts)) != 0)
     {
         if (rtmp_proto_impl == 0 && //err == AVERROR_UNKNOWN &&
@@ -3227,6 +3359,13 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         {
             char error[512];
 
+            read_stall_disarm();
+            if (readStallFired)
+            {
+                ffmpeg_err("open not finished after %u s, ended (%d)\n", readStallLimitMs[AVIdx] / 1000, err);
+                /* not what the demuxer made of the interruption */
+                err = AVERROR(ETIMEDOUT);
+            }
             ffmpeg_err("avformat_open_input failed %d (%s)\n", err, filename);
             av_strerror(err, error, 512);
             E2iSendMsg("{\"FF_ERROR\":{\"msg\":\"%s\",\"code\":%i}}\n", error, err);
@@ -3247,6 +3386,12 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
         }
     }
 
+    if (readStallFired)
+    {
+        /* a demuxer can swallow the interruption and report success */
+        av_dict_free(&avio_opts);
+        return open_stalled(AVIdx, "open");
+    }
     /* the options no one has taken are left in the dictionary */
     av_dict_free(&avio_opts);
 
@@ -3265,11 +3410,24 @@ int32_t container_ffmpeg_init_av_context(Context_t *context, char *filename, uin
 
     ffmpeg_printf(20, "find_streaminfo\n");
 
+    /* Probing a live stream can take long while data keeps coming (flv: up
+     * to 90 s of stream), so here the time without a byte counts. HLS and
+     * DASH read through connections of their own, which cannot be seen from
+     * here: for them it stays the time of the whole call. */
+    read_stall_arm(readStallLimitMs[AVIdx], avContextTab[AVIdx]->pb);
     if (avformat_find_stream_info(avContextTab[AVIdx], NULL) < 0)
     {
         ffmpeg_err("Error avformat_find_stream_info\n");
     }
 
+    if (readStallFired)
+    {
+        /* also when the call reports no error: the duration estimate at the
+         * end of it has none to report */
+        av_dict_free(&avio_opts);
+        return open_stalled(AVIdx, "stream info");
+    }
+    read_stall_disarm();
 #ifdef USE_CUSTOM_IO
     /* opened: from here on the plain read function, as before */
     if (avContextTab[AVIdx] != NULL && avContextTab[AVIdx]->pb != NULL &&
