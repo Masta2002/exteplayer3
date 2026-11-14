@@ -172,6 +172,7 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
             tracklist[j].Id = Tracks[i].Id;
             tracklist[j].Name = strdup(Tracks[i].Name);
             tracklist[j].Encoding = strdup(Tracks[i].Encoding);
+            tracklist[j].Title = Tracks[i].Title ? strdup(Tracks[i].Title) : NULL;
             FillAudioDescription(&tracklist[j], &Tracks[i]);
             ++j;
         }
@@ -274,6 +275,7 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
                 track->Id       = Tracks[CurrentTrack].Id;
                 track->Name     = strdup(Tracks[CurrentTrack].Name);
                 track->Encoding = strdup(Tracks[CurrentTrack].Encoding);
+                track->Title    = Tracks[CurrentTrack].Title ? strdup(Tracks[CurrentTrack].Title) : NULL;
                 FillAudioDescription(track, &Tracks[CurrentTrack]);
             }
         }
