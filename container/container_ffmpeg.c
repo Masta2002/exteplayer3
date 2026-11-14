@@ -256,6 +256,13 @@ static int32_t Write(Write_FN WriteFun, void *context, void *privateData, int64_
         *extra = copy;
     }
     releaseMutex(__FILE__, __FUNCTION__,__LINE__);
+    if (OutputPacingLeadMs() > 0)
+    {
+        if (ctx->output->video && WriteFun == ctx->output->video->Write)
+            OutputPacingWait(ctx, PACING_STREAM_VIDEO, pts);
+        else if (ctx->output->audio && WriteFun == ctx->output->audio->Write)
+            OutputPacingWait(ctx, PACING_STREAM_AUDIO, pts);
+    }
     ret = WriteFun(context, privateData);
     getMutex(__FILE__, __FUNCTION__,__LINE__);
     *extra = saved;
@@ -2172,6 +2179,8 @@ static void FFMPEGThread(Context_t *context)
             }
             do_seek_target_seconds = false;
             do_seek_target_bytes = false;
+            if (OutputPacingLeadMs() > 0)
+                OutputPacingReset();
 
             restart_audio_resampling = 1;
             currentVideoPts = -1;
