@@ -31,8 +31,7 @@ for t in "$@"; do
     cat /w/$t.failed
     built=$(find . -name '*.o' | wc -l)
     libs=$(ls lib*/lib*.a 2>/dev/null | wc -l)
-    progs=$(ls ffmpeg ffprobe 2>/dev/null | tr '
-' ' ')
+    progs=$(echo $(ls ffmpeg ffprobe 2>/dev/null))
     echo "configure passed ($std), make exit $rc, $built objects compiled, $(grep -c . /w/$t.failed) failed, $libs libraries, programs: $progs" > /w/$t.result
     cd /
     rm -rf /tmp/build_$t

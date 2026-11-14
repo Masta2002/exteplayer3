@@ -695,26 +695,29 @@ jobs:
         # without the tag (information)
         if [ -n "$VAN" ]; then
           set +e
-          # what differs between two framecrc outputs: $1 with the series, $2 without
-          differ() {
-            if cmp -s <(grep -v '^#' $1 | cut -d, -f1,5-) <(grep -v '^#' $2 | cut -d, -f1,5-); then
-              echo "same packets (stream, size, checksum), timestamps or header lines differ"
+          # framecrc output with the series ($2) against the one without
+          # ($3, exit code $4). OE-A patch 0002-fix-mpegts of the series no
+          # longer attaches the MPEG-TS stream id side data to the packets:
+          # that column is the one difference expected.
+          versus() {
+            sed 's/, S=1, MPEGTS Stream ID, .*$//' $3 > $3.nosd
+            n="$(grep -vc '^#' $3) packets"
+            if cmp -s $2 $3; then
+              echo "::notice::tree without the series, $1: exit $4, the same $n as with the series"
+            elif cmp -s $2 $3.nosd; then
+              echo "::notice::tree without the series, $1: exit $4, the same $n and timestamps as with the series; only the MPEG-TS stream id side data ($(grep -c 'MPEGTS Stream ID' $3) packets) is not there with the series (OE-A patch 0002-fix-mpegts)"
             else
-              echo "packets differ"
+              echo "::warning::tree without the series, $1: exit $4, $n, they differ from the $(grep -vc '^#' $2) with the series"
+              diff $2 $3.nosd > $3.diff
+              grep -c '^<' $3.diff; grep -c '^>' $3.diff
+              sed -n 1,30p $3.diff
             fi
-            diff <(grep '^#' $1) <(grep '^#' $2)
-            diff <(grep -v '^#' $1) <(grep -v '^#' $2) | grep '^<' | head -8
-            diff <(grep -v '^#' $1) <(grep -v '^#' $2) | grep '^>' | head -8
           }
           for u in nt.m3u8 nt_br.m3u8 http://127.0.0.1:8090/nt_br.m3u8 http://127.0.0.1:8091/nt_br.m3u8 http://127.0.0.1:8091/nt.m3u8; do
             rd $VAN $(inp $u) > van.txt 2> van.err
             rc=$?
-            if cmp -s nt.txt van.txt; then
-              echo "::notice::tree without the series, $u: exit $rc, the same $(grep -vc '^#' van.txt) packets as with the series"
-            else
-              echo "::warning::tree without the series, $u: exit $rc, $(grep -vc '^#' van.txt) packets, they differ from those with the series"
-              tail -3 van.err; differ nt.txt van.txt
-            fi
+            tail -3 van.err
+            versus $u nt.txt van.txt $rc
           done
           rd $VAN $(inp disc.m3u8) > van_disc.txt 2> van.err
           echo "::notice::tree without the series, disc.m3u8 (no discontinuity support there): exit $?, $(grep -vc '^#' van_disc.txt) packets, $(diff disc.txt van_disc.txt | grep -c '^>') of them differ from those with the series"
@@ -727,12 +730,8 @@ jobs:
             $PAT -nostdin -v error -flags +bitexact $a -i master.m3u8 -map 0 $b -c copy -fflags +bitexact -f framecrc - > ../../br/swhls_pat_$t.txt 2> /dev/null
             $VAN -nostdin -v error -flags +bitexact $a -i master.m3u8 -map 0 $b -c copy -fflags +bitexact -f framecrc - > ../../br/swhls_van_$t.txt 2> ../../br/van.err
             rc=$?
-            if cmp -s ../../br/swhls_pat_$t.txt ../../br/swhls_van_$t.txt; then
-              echo "::notice::tree without the series, HLS with two audio renditions ($t): exit $rc, the same $(grep -vc '^#' ../../br/swhls_van_$t.txt) packets as with the series"
-            else
-              echo "::warning::tree without the series, HLS with two audio renditions ($t): exit $rc, $(grep -vc '^#' ../../br/swhls_van_$t.txt) packets, with the series $(grep -vc '^#' ../../br/swhls_pat_$t.txt); they differ"
-              tail -3 ../../br/van.err; differ ../../br/swhls_pat_$t.txt ../../br/swhls_van_$t.txt
-            fi
+            tail -3 ../../br/van.err
+            versus "HLS with two audio renditions ($t)" ../../br/swhls_pat_$t.txt ../../br/swhls_van_$t.txt $rc
           done
         else
           echo "::warning::no ffmpeg of the tree without the series, comparison skipped"
