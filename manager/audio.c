@@ -58,9 +58,37 @@ static pthread_mutex_t track_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Prototypes                    */
 /* ***************************** */
 
+/* container_ffmpeg.c: what the demuxer thread knows about the audio track it
+ * plays. Returns 0 if track_id is not that track. Has a lock of its own and
+ * takes no other, so it can be called with track_mutex held. */
+extern int container_ffmpeg_audio_live_info(int32_t track_id, int *channels, const char **description);
+
 /* ***************************** */
 /* Functions                     */
 /* ***************************** */
+
+/* Track_t has the values of the codec parameters, read when the tracks were
+ * listed. The track that plays can be more exact: channel count of the decoded
+ * frames, Atmos found in the packets. */
+static void FillAudioDescription(TrackDescription_t *desc, const Track_t *track)
+{
+    int channels = 0;
+    const char *description = NULL;
+
+    desc->Description = track->Description;
+    desc->channels    = track->channels;
+    if (container_ffmpeg_audio_live_info(track->Id, &channels, &description))
+    {
+        if (channels > 0)
+        {
+            desc->channels = channels;
+        }
+        if (description)
+        {
+            desc->Description = description;
+        }
+    }
+}
 
 static int ManagerAdd(Context_t  *context, Track_t track) {
 
@@ -144,6 +172,8 @@ static TrackDescription_t* ManagerList(Context_t  *context __attribute__((unused
             tracklist[j].Id = Tracks[i].Id;
             tracklist[j].Name = strdup(Tracks[i].Name);
             tracklist[j].Encoding = strdup(Tracks[i].Encoding);
+            tracklist[j].Title = Tracks[i].Title ? strdup(Tracks[i].Title) : NULL;
+            FillAudioDescription(&tracklist[j], &Tracks[i]);
             ++j;
         }
         tracklist[j].Id = -1;
@@ -245,6 +275,8 @@ static int Command(void  *_context, ManagerCmd_t command, void * argument)
                 track->Id       = Tracks[CurrentTrack].Id;
                 track->Name     = strdup(Tracks[CurrentTrack].Name);
                 track->Encoding = strdup(Tracks[CurrentTrack].Encoding);
+                track->Title    = Tracks[CurrentTrack].Title ? strdup(Tracks[CurrentTrack].Title) : NULL;
+                FillAudioDescription(track, &Tracks[CurrentTrack]);
             }
         }
         else
