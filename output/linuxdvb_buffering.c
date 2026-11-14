@@ -273,6 +273,8 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         pthread_cond_init(&bufferingdDataAddedCond, NULL);
 
         bufferingCloseRequested = false;
+        /* set before the thread runs: it clears the flag when it ends */
+        hasBufferingThreadStarted = true;
         if((error = pthread_create(&bufferingThread, &attr, (void *)&LinuxDvbBuffThread, context)) != 0)
         {
             buff_printf(10, "Creating thread, error:%d:%s\n", error, strerror(error));
@@ -283,7 +285,6 @@ int32_t LinuxDvbBuffOpen(Context_t *context, char *type, int outfd, void *mtx)
         else
         {
             buff_printf(10, "Created thread\n");
-            hasBufferingThreadStarted = true;
         }
     }
 
