@@ -247,8 +247,18 @@ if [ -x $ROOT/usr/bin/ffmpeg ]; then
     run hls_file $PROBE /samples/hls/master.m3u8
     run dash_file $PROBE /samples/dash/manifest.mpd
     if [ $VARIANT = sky ]; then
-        run hls_https $PROBE https://127.0.0.1:${HTTPS_PORT:-8443}/hls/master.m3u8
-        run dash_https $PROBE https://127.0.0.1:${HTTPS_PORT:-8443}/dash/manifest.mpd
+        U=https://127.0.0.1:${HTTPS_PORT:-8443}
+        # default options (FFmpeg 8 and newer verify the certificate by default)
+        run hls_https $PROBE $U/hls/master.m3u8
+        run dash_https $PROBE $U/dash/manifest.mpd
+        # verification off, and verification against the CA file of the test
+        run hls_https_noverify $PROBE -tls_verify 0 $U/hls/master.m3u8
+        run dash_https_noverify $PROBE -tls_verify 0 $U/dash/manifest.mpd
+        run hls_https_cafile $PROBE -ca_file /samples/crt.pem -verifyhost localhost $U/hls/master.m3u8
+        run dash_https_cafile $PROBE -ca_file /samples/crt.pem -verifyhost localhost $U/dash/manifest.mpd
+        CRYPTO=$(ls /usr/lib/*/libcrypto.so.1.0.0 | head -1)
+        [ -n "$PKGP" ] && CRYPTO=/opt/ossl111/lib/libcrypto.so.1.1
+        run openssl_dir sh -c "strings $CRYPTO | grep -m1 '^OPENSSLDIR'"
     fi
 fi
 
@@ -286,6 +296,9 @@ if [ -d $ROOT/usr/include/libavformat ]; then
     if [ -x $OUT/exteplayer3 ]; then
         run player_usage sh -c "$OUT/exteplayer3 2>&1 | head -4; $OUT/exteplayer3 2>&1 | grep -c -- '-Q'"
         run player_hls sh -c "timeout 20 $OUT/exteplayer3 /samples/hls/master.m3u8 2>&1 | tail -6"
+        if [ $VARIANT = sky ]; then
+            run player_https sh -c "timeout 30 $OUT/exteplayer3 https://127.0.0.1:${HTTPS_PORT:-8443}/hls/master.m3u8 2>&1 | grep -v '^$' | tail -8"
+        fi
 
         echo "======== package"
         P=$OUT/pkg
@@ -328,7 +341,7 @@ if [ $VARIANT = sky ] && [ -n "$PKGP" ] && [ -f $B/ffbuild/config.mak ]; then
         sh -c "$CMD" > $OUT/tls_openssl_$hdr.log 2>&1
         trc=$?
         grep -E 'error' $OUT/tls_openssl_$hdr.log | sed "s#$SRC/##g" | head -40
-        res tls_openssl_$hdr "exit $trc, $(grep -c 'error' $OUT/tls_openssl_$hdr.log) errors: $(grep 'error' $OUT/tls_openssl_$hdr.log | sed 's/^[^ ]*: error: //' | sort -u | head -12 | tr '\n' '|' | cut -c1-900)"
+        res tls_openssl_$hdr "exit $trc, $(grep -c ': error:' $OUT/tls_openssl_$hdr.log) errors: $(grep ': error:' $OUT/tls_openssl_$hdr.log | sed 's/^[^ ]*: error: //' | sort -u | head -12 | tr '\n' '|' | cut -c1-900)"
     done
     cd /
 fi
@@ -348,7 +361,7 @@ if [ ${#EXTRAS[@]} -gt 0 ]; then
             ( cd /b3 && make V=1 libavformat/tls_gnutls.o libavformat/tls.o ) > $OUT/tls_gnutls.log 2>&1
             grc=$?
             grep -E 'error' $OUT/tls_gnutls.log | sed "s#$SRC/##g" | head -20
-            res tls_gnutls_compile "exit $grc, $(grep -c 'error' $OUT/tls_gnutls.log) errors: $(grep 'error' $OUT/tls_gnutls.log | sed 's/^[^ ]*: error: //' | sort -u | head -8 | tr '\n' '|' | cut -c1-600)"
+            res tls_gnutls_compile "exit $grc, $(grep -c ': error:' $OUT/tls_gnutls.log) errors: $(grep ': error:' $OUT/tls_gnutls.log | sed 's/^[^ ]*: error: //' | sort -u | head -8 | tr '\n' '|' | cut -c1-600)"
         fi
         res cfg_gnutls_version "$(pkg-config --modversion gnutls)"
         PKGP=$PKGSAVE
