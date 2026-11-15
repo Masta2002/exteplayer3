@@ -23,7 +23,7 @@ on:
 
 env:
   FF_BASE: d838f9f9aeb0e09b4d068e2af20a46a12640696f
-  FF_COUNT: 61
+  FF_COUNT: 62
   FF_OLD: 53fe5fa66e
 
 jobs:
@@ -525,7 +525,8 @@ jobs:
     # timestamps rounded to milliseconds; with aac_pts_dejitter=60 every
     # packet of the output is 1920 ticks after the one before, without the
     # option the output is byte for byte that of the tree without the series.
-    - name: The options skyjet18/exteplayer3 sets, AAC dejitter, defaults unchanged
+    - name: hls_quality_mode and hls_audio_default_only of skyjet18/exteplayer3, HLS unchanged without them
+      if: ${{ !cancelled() }}
       env:
         LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
       run: |
@@ -563,7 +564,7 @@ jobs:
         } > master.m3u8
         cat master.m3u8 high/index.m3u8
         ls -l low mid high a0 a1
-        python3 $T/range_server.py 8092 1.1 $PWD/req.log &
+        python3 $T/range_server.py 8092 1.1 $PWD/req.log 2> /dev/null &
         SRV1=$!
         trap 'kill $SRV1 2>/dev/null || true' EXIT
         sleep 1
@@ -634,8 +635,12 @@ jobs:
         test "$(grep -vc '^#' q2seek.txt)" -gt 20
         test "$(cnt '^/low/\|^/mid/' q2seek.req)" = 0
         # the options exist: ffprobe takes them, and refuses one that does not
-        $FP -v error -hls_quality_mode 2 -hls_audio_default_only 1 -show_entries stream=codec_type -of csv=p=0 $H/master.m3u8 | sort | tee fp.txt
+        # (ffprobe lists a stream once by itself and once in every program it
+        # belongs to; the audio rendition is in the programs of all variants)
+        $FP -v error -hls_quality_mode 2 -hls_audio_default_only 1 -show_entries stream=index,codec_type -of csv=p=0 $H/master.m3u8 | sort -u | tee fp.txt
         test "$(grep -c . fp.txt)" = 2
+        grep -q video fp.txt
+        grep -q audio fp.txt
         if $FP -v error -hls_no_such_option 1 $H/master.m3u8 > bogus.txt 2>&1; then
           echo "ffprobe accepted an option that does not exist"; exit 1
         fi
@@ -671,9 +676,21 @@ jobs:
         else
           echo "::warning::no ffmpeg of the tree without the series, comparison skipped"
         fi
-        cd ..
 
-        # ---- DASH: video, audio and a subtitle representation in segments
+    # dash_subtitle_default_discard, see above. A DASH stream of the dash
+    # muxer (video and audio) with a subtitle representation added to the
+    # manifest: three WebVTT segments of two seconds.
+    - name: dash_subtitle_default_discard and the DASH options of skyjet18/exteplayer3
+      if: ${{ !cancelled() }}
+      env:
+        LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
+      run: |
+        set -eux
+        FF="tmo $HOME/ffmpeg/bin/ffmpeg"
+        T=$PWD/.github/ffmpeg9-tests
+        OC="tmo $PWD/opt_check"; DS="tmo $PWD/dash_sub"
+        gen() { $FF -nostdin -v error "$@"; }
+        cnt() { grep -c "$1" "$2" || true; }
         mkdir pd && cd pd
         gen -f lavfi -i testsrc=d=6:s=160x90:r=25 -f lavfi -i sine=d=6 -c:v libx264 -g 25 -c:a aac \
             -f dash -seg_duration 2 dash.mpd
@@ -684,9 +701,9 @@ jobs:
         sed 's#</Period>#<AdaptationSet id="9" contentType="text" mimeType="text/vtt" lang="en"><Representation id="sub" bandwidth="1000"><SegmentTemplate timescale="1" duration="2" startNumber="1" media="sub-$Number$.vtt"/></Representation></AdaptationSet></Period>#' dash.mpd > sub.mpd
         test "$(grep -c 'sub-\$Number\$' sub.mpd)" = 1
         cat sub.mpd
-        python3 $T/range_server.py 8093 1.1 $PWD/req.log &
+        python3 $T/range_server.py 8093 1.1 $PWD/req.log 2> /dev/null &
         SRV2=$!
-        trap 'kill $SRV1 $SRV2 2>/dev/null || true' EXIT
+        trap 'kill $SRV2 2>/dev/null || true' EXIT
         sleep 1
         D=http://127.0.0.1:8093
         # ds <name> <option> <enable>
@@ -725,9 +742,18 @@ jobs:
             cenc_decryption_key=00112233445566778899aabbccddeeff \
             cenc_decryption_video_key=00112233445566778899aabbccddeeff \
             cenc_decryption_audio_key=00112233445566778899aabbccddeeff
-        cd ..
 
-        # ---- AAC dejitter of the MPEG-TS muxer
+    # The AAC dejitter of the MPEG-TS muxer, see above.
+    - name: aac_pts_dejitter of the MPEG-TS muxer, and the muxer unchanged without it
+      if: ${{ !cancelled() }}
+      env:
+        LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
+      run: |
+        set -eux
+        FF="tmo $HOME/ffmpeg/bin/ffmpeg"; FP="tmo $HOME/ffmpeg/bin/ffprobe"
+        VAN=""
+        if [ -x ffvan/ffmpeg ]; then VAN="timeout -k 5 120 $PWD/ffvan/ffmpeg"; fi
+        gen() { $FF -nostdin -v error "$@"; }
         mkdir pj && cd pj
         gen -f lavfi -i sine=f=440:d=10:r=48000 -c:a aac -b:a 96k in.mkv
         # mux <ffmpeg> <output> [muxer options]
@@ -767,6 +793,7 @@ jobs:
     # the same commands on a file with three audio streams (pcm_s16le eng,
     # pcm_alaw deu, pcm_s16le fra) and must write the same file.
     - name: ffmpeg with the old stream specifier forms unchanged by patch 0053
+      if: ${{ !cancelled() }}
       env:
         LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
       run: |
@@ -848,6 +875,7 @@ jobs:
     # stream with three variants, the DASH stream with subtitles, the
     # MPEG-TS muxer and the track switches.
     - name: HLS and DASH unchanged by the newer commits and by the patches 0050 to 0052 and 0054 without a track switch
+      if: ${{ !cancelled() }}
       run: |
         set -eux
         git -C ffsrc worktree add --detach ../ffold $FF_OLD
@@ -1023,6 +1051,7 @@ jobs:
     # Uses the installed libraries (the build tree is without 0050 to 0052
     # and 0054 at this point).
     - name: HLS byte range segments (upstream 2120a1d626) and the discontinuity patch
+      if: ${{ !cancelled() }}
       env:
         LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
       run: |
