@@ -359,7 +359,9 @@ stage_qemu() {
     # demux and decode everything (the image's configuration has no null
     # muxer: decoded video and audio into a Matroska file that is thrown away)
     $FF -v error -i "$u" -map 0:v:0 -map 0:a:0 -c:v rawvideo -c:a pcm_s16le -f matroska -y /dev/null 2> dec.err || { cat dec.err; exit 1; }
-    f=$($FP -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$u")
+    # (a stream of an HLS variant is listed twice, with its program and alone)
+    f=$($FP -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$u" | sort -u | tr '\n' ' ' | sed 's/ $//')
+    echo "video frames: $f"
     test "$f" = 150
     notice "ARM ffprobe/ffmpeg of the bundle under qemu, $u: $t; $f video frames decoded, $(grep -c . dec.err || true) lines of errors"
   done
