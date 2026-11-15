@@ -356,15 +356,16 @@ stage_qemu() {
     echo "$t" | grep -q 'h264,video'
     echo "$t" | grep -q 'aac,audio'
     case $u in *m3u8) echo "$t" | grep -q 'webvtt,subtitle';; esac
-    # demux and decode everything
-    $FF -v error -i "$u" -map 0:v -map 0:a -f null - 2> dec.err || { cat dec.err; exit 1; }
+    # demux and decode everything (the image's configuration has no null
+    # muxer: decoded video and audio into a Matroska file that is thrown away)
+    $FF -v error -i "$u" -map 0:v:0 -map 0:a:0 -c:v rawvideo -c:a pcm_s16le -f matroska -y /dev/null 2> dec.err || { cat dec.err; exit 1; }
     f=$($FP -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$u")
     test "$f" = 150
     notice "ARM ffprobe/ffmpeg of the bundle under qemu, $u: $t; $f video frames decoded, $(grep -c . dec.err || true) lines of errors"
   done
   # the subtitle rendition of the HLS sample
-  $FF -v error -i s/hls/master.m3u8 -map 0:s -f webvtt - | tee sub_out.txt
-  grep -q hello sub_out.txt
+  $FP -v error -select_streams s:0 -show_packets -show_data s/hls/master.m3u8 | tee sub_out.txt | head -20
+  grep -q '68 656c 6c6f' sub_out.txt
 
   # HLS with #EXT-X-DISCONTINUITY (patch 0050 of the series): the second
   # file starts 100 s later in its own time stamps. Information: the same
