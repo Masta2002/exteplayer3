@@ -351,16 +351,19 @@ stage_qemu() {
   sleep 2
   check() {
     u=$1
-    t=$(types "$u")
+    # FFmpeg 9 verifies TLS certificates unless told not to; the test
+    # server has a self-signed one
+    o=""; case $u in https:*) o="-tls_verify 0";; esac
+    t=$(types $o "$u")
     echo "$u: $t"
     echo "$t" | grep -q 'h264,video'
     echo "$t" | grep -q 'aac,audio'
     case $u in *m3u8) echo "$t" | grep -q 'webvtt,subtitle';; esac
     # demux and decode everything (the image's configuration has no null
     # muxer: decoded video and audio into a Matroska file that is thrown away)
-    $FF -v error -i "$u" -map 0:v:0 -map 0:a:0 -c:v rawvideo -c:a pcm_s16le -f matroska -y /dev/null 2> dec.err || { cat dec.err; exit 1; }
+    $FF -v error $o -i "$u" -map 0:v:0 -map 0:a:0 -c:v rawvideo -c:a pcm_s16le -f matroska -y /dev/null 2> dec.err || { cat dec.err; exit 1; }
     # (a stream of an HLS variant is listed twice, with its program and alone)
-    f=$($FP -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$u" | grep . | sort -u | tr '\n' ' ' | sed 's/ $//')
+    f=$($FP -v error $o -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$u" | grep . | sort -u | tr '\n' ' ' | sed 's/ $//')
     echo "video frames: $f"
     test "$f" = 150
     notice "ARM ffprobe/ffmpeg of the bundle under qemu, $2$u: $t; $f video frames decoded, $(grep -c . dec.err || true) lines of errors"
@@ -372,6 +375,8 @@ stage_qemu() {
            https://127.0.0.1:8443/s/hls/master.m3u8 https://127.0.0.1:8443/s/dash/dash.mpd; do
     check "$u" ""
   done
+  r=$($Q "$B/ffprobe" -v error https://127.0.0.1:8443/s/hls/master.m3u8 2>&1 | tr '\n' ' ' || true)
+  notice "HTTPS with the self-signed certificate and no -tls_verify 0 (series): $r"
   # Information: a local DASH manifest named with a directory in front
   # (relative and absolute), series and the image's FFmpeg 9.0.2. The first
   # run of this job failed here with the series: "Error when loading first
