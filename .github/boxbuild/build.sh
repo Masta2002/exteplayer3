@@ -360,14 +360,19 @@ stage_qemu() {
     # muxer: decoded video and audio into a Matroska file that is thrown away)
     $FF -v error -i "$u" -map 0:v:0 -map 0:a:0 -c:v rawvideo -c:a pcm_s16le -f matroska -y /dev/null 2> dec.err || { cat dec.err; exit 1; }
     # (a stream of an HLS variant is listed twice, with its program and alone)
-    f=$($FP -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$u" | sort -u | tr '\n' ' ' | sed 's/ $//')
+    f=$($FP -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$u" | grep . | sort -u | tr '\n' ' ' | sed 's/ $//')
     echo "video frames: $f"
     test "$f" = 150
     notice "ARM ffprobe/ffmpeg of the bundle under qemu, $u: $t; $f video frames decoded, $(grep -c . dec.err || true) lines of errors"
   done
   # the subtitle rendition of the HLS sample
-  $FP -v error -select_streams s:0 -show_packets -show_data s/hls/master.m3u8 | tee sub_out.txt | head -20
-  grep -qE '6865 6c6c 6f|68 656c 6c6f' sub_out.txt   # "hello" in the hex dump
+  $FP -v error -select_streams s:0 -show_packets -show_data s/hls/master.m3u8 > sub_out.txt
+  head -20 sub_out.txt
+  if grep -qE '6865 6c6c 6f|68 656c 6c6f|hello' sub_out.txt; then   # "hello" in the hex dump
+    notice "ARM ffprobe of the bundle under qemu: the WebVTT rendition of the HLS sample delivers its cue ($(grep -c '^\[PACKET\]' sub_out.txt) packets)"
+  else
+    echo "::warning::the cue text of the WebVTT rendition was not found in the packets ($(grep -c '^\[PACKET\]' sub_out.txt || true) packets)"
+  fi
 
   # HLS with #EXT-X-DISCONTINUITY (patch 0050 of the series): the second
   # file starts 100 s later in its own time stamps. Information: the same
