@@ -1,0 +1,91 @@
+name: FFmpeg 9 series and exteplayer3 for the box (ARM bundle)
+
+# A bundle to try on a Vu+ Uno 4K SE with openATV 8.0 without installing
+# anything: the FFmpeg 9 patch series (Masta2002/FFmpeg release/9.0-patched)
+# as shared libraries in a folder of their own, exteplayer3 of skyjet18
+# master and of oe-alliance master linked against them, ffmpeg and ffprobe.
+# Cross-compiled with the Ubuntu ARM compiler against a sysroot made of the
+# packages of the image's own feed; the FFmpeg configure options are those
+# of the image. The result is run under qemu-arm with that sysroot.
+# .github/boxbuild/pins names the commits and the feed.
+
+on:
+  push:
+    branches:
+      - ci/ffmpeg9-boxbuild
+  workflow_dispatch:
+
+jobs:
+  boxbuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Pins
+      id: pins
+      run: grep -E '^[A-Z_]+=' .github/boxbuild/pins >> "$GITHUB_OUTPUT"
+
+    - name: FFmpeg series
+      uses: actions/checkout@v4
+      with:
+        repository: Masta2002/FFmpeg
+        ref: ${{ steps.pins.outputs.FFMPEG_COMMIT }}
+        path: ffsrc
+
+    - name: exteplayer3 of skyjet18
+      uses: actions/checkout@v4
+      with:
+        repository: skyjet18/exteplayer3
+        ref: ${{ steps.pins.outputs.SKY_COMMIT }}
+        path: skyjet
+
+    - name: exteplayer3 of oe-alliance
+      uses: actions/checkout@v4
+      with:
+        repository: oe-alliance/exteplayer3
+        ref: ${{ steps.pins.outputs.OEA_COMMIT }}
+        path: oea
+
+    - name: Install tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf qemu-user \
+          pkg-config autoconf automake libtool zstd patchelf openssl ffmpeg
+
+    - name: Sysroot from the feed of the image
+      run: bash .github/boxbuild/build.sh sysroot
+
+    - name: Compiler against the sysroot
+      run: bash .github/boxbuild/build.sh toolchain
+
+    - name: FFmpeg series for ARM, configured as the image's FFmpeg
+      run: bash .github/boxbuild/build.sh ffmpeg
+
+    - name: exteplayer3 of skyjet18 and of oe-alliance for ARM
+      run: bash .github/boxbuild/build.sh players
+
+    - name: Bundle
+      run: bash .github/boxbuild/build.sh bundle
+
+    - name: The bundle under qemu-arm with the sysroot
+      run: bash .github/boxbuild/build.sh qemu
+
+    - name: Upload the bundle
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ep3ff9-box
+        if-no-files-found: warn
+        path: |
+          out/*.tar.gz
+          out/*.sha256
+          out/ep3ff9/MANIFEST.txt
+          elf-report.txt
+          ffmpeg-configure-line.txt
+          sysroot.list
+          sky-build.log
+          oea-build.log
+          ffbuild/ffbuild/config.log
+          tc/hello.*
+          q/*.txt

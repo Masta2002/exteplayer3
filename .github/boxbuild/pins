@@ -1,0 +1,10 @@
+# What the box build is made of. A new state is a new commit here.
+# FFmpeg: Masta2002/FFmpeg release/9.0-patched
+FFMPEG_COMMIT=e861aba24040c66f61625cb64d30b0619163a46d
+# skyjet18/exteplayer3 master (version 186)
+SKY_COMMIT=13c7679dc32bdc32ad44cfe149968676f2b45c63
+# oe-alliance/exteplayer3 master (version 185)
+OEA_COMMIT=2f850bd73cad72e2f5151545a3b4511a3dfdf274
+# openATV 8.0 feed of the Vu+ Uno 4K SE (from /etc/opkg/*.conf of the box)
+FEED=https://feeds2.mynonpublic.com/8.0.0-beta/vuuno4kse
+FEED_ARCH=cortexa15hf-neon-vfpv4
