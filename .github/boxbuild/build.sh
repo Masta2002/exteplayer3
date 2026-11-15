@@ -349,8 +349,8 @@ stage_qemu() {
   SRV2=$!
   trap 'kill $SRV $SRV2 2>/dev/null || true' EXIT
   sleep 2
-  for u in s/hls/master.m3u8 s/dash/dash.mpd http://127.0.0.1:8089/s/hls/master.m3u8 http://127.0.0.1:8089/s/dash/dash.mpd \
-           https://127.0.0.1:8443/s/hls/master.m3u8 https://127.0.0.1:8443/s/dash/dash.mpd; do
+  check() {
+    u=$1
     t=$(types "$u")
     echo "$u: $t"
     echo "$t" | grep -q 'h264,video'
@@ -363,8 +363,27 @@ stage_qemu() {
     f=$($FP -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$u" | grep . | sort -u | tr '\n' ' ' | sed 's/ $//')
     echo "video frames: $f"
     test "$f" = 150
-    notice "ARM ffprobe/ffmpeg of the bundle under qemu, $u: $t; $f video frames decoded, $(grep -c . dec.err || true) lines of errors"
+    notice "ARM ffprobe/ffmpeg of the bundle under qemu, $2$u: $t; $f video frames decoded, $(grep -c . dec.err || true) lines of errors"
+  }
+  # local files: from inside their directory
+  (cd s/hls && check master.m3u8 "local, in its directory: ")
+  (cd s/dash && check dash.mpd "local, in its directory: ")
+  for u in http://127.0.0.1:8089/s/hls/master.m3u8 http://127.0.0.1:8089/s/dash/dash.mpd \
+           https://127.0.0.1:8443/s/hls/master.m3u8 https://127.0.0.1:8443/s/dash/dash.mpd; do
+    check "$u" ""
   done
+  # Information: a local DASH manifest named with a directory in front
+  # (relative and absolute), series and the image's FFmpeg 9.0.2. The first
+  # run of this job failed here with the series: "Error when loading first
+  # fragment of playlist".
+  for p in "$B/ffprobe" "$SR/usr/bin/ffprobe"; do
+    for u in s/dash/dash.mpd "$PWD/s/dash/dash.mpd" s/hls/master.m3u8; do
+      r=$($Q "$p" -v error -show_entries stream=codec_type -of csv=p=0 "$u" 2>&1 | grep . | sort -u | tr '\n' ' ' || true)
+      w=series; if [ "$p" != "$B/ffprobe" ]; then w="image 9.0.2"; fi
+      notice "local manifest with a directory in its name, $w, $u: $r"
+    done
+  done
+  $Q "$B/ffprobe" -v debug s/dash/dash.mpd 2>&1 | grep -iE 'open|fragment|url|No such' | tail -15 || true
   # the subtitle rendition of the HLS sample
   $FP -v error -select_streams s:0 -show_packets -show_data s/hls/master.m3u8 > sub_out.txt
   head -20 sub_out.txt
