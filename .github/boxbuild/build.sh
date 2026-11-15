@@ -365,7 +365,7 @@ stage_qemu() {
   done
   # the subtitle rendition of the HLS sample
   $FP -v error -select_streams s:0 -show_packets -show_data s/hls/master.m3u8 | tee sub_out.txt | head -20
-  grep -q '68 656c 6c6f' sub_out.txt
+  grep -qE '6865 6c6c 6f|68 656c 6c6f' sub_out.txt   # "hello" in the hex dump
 
   # HLS with #EXT-X-DISCONTINUITY (patch 0050 of the series): the second
   # file starts 100 s later in its own time stamps. Information: the same
