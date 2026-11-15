@@ -1,0 +1,158 @@
+name: FFmpeg 9 with an old toolchain (ARM, MIPS)
+
+# Does FFmpeg 9 (and the patch series on it) build and start with the
+# toolchain generation of the old images (OpenPLi 4: GCC 4.9.1, glibc 2.20,
+# binutils 2.24, OpenSSL 1.0.1j)? The environment here is a Debian 8 userland
+# of the target architecture under qemu-user (GCC 4.9.2, glibc 2.19,
+# binutils 2.25, OpenSSL 1.0.1t), see .github/oldtoolchain/rootfs.sh.
+# Information only: the builds never fail, the results are in the summary.
+
+on:
+  push:
+    branches:
+      - ci/ffmpeg9-oldtoolchain
+    paths:
+      - '.github/oldtoolchain/**'
+      - '.github/workflows/ffmpeg9-oldtoolchain.yml'
+  workflow_dispatch:
+
+env:
+  # skyjet18/FFmpeg release/9.0-patched without the series
+  FF_STOCK9: d838f9f9aeb0e09b4d068e2af20a46a12640696f
+  # Masta2002/FFmpeg release/9.0-patched, the series
+  FF_SERIES9: e861aba24040c66f61625cb64d30b0619163a46d
+  # skyjet18/FFmpeg release/6.1-patched, the comparison
+  FF_SKY61: 0da0223cd1add40eabaad04e1ce609f05670a1de
+
+jobs:
+  rootfs:
+    name: environment ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [armhf, mipsel]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: rootfs-${{ matrix.arch }}.tar.zst
+        key: rootfs-${{ matrix.arch }}-${{ hashFiles('.github/oldtoolchain/rootfs.sh', '.github/oldtoolchain/binfmt.sh') }}
+    - name: Build the userland
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: bash .github/oldtoolchain/rootfs.sh ${{ matrix.arch }} /opt/oldroot "$PWD/rootfs-${{ matrix.arch }}.tar.zst"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: rootfs-${{ matrix.arch }}
+        path: rootfs-${{ matrix.arch }}.tar.zst
+        compression-level: 0
+        retention-days: 3
+
+  build:
+    name: ${{ matrix.target }} ${{ matrix.build }}
+    needs: rootfs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [arm, mips]
+        build: [stock9-sky, series9-sky, sky61-sky, stock9-asm224, series9-asm224]
+    steps:
+    - name: Select
+      run: |
+        build=${{ matrix.build }}
+        tree=${build%-*}
+        case $tree in
+          stock9)  repo=skyjet18/FFmpeg;  ref=$FF_STOCK9 ;;
+          series9) repo=Masta2002/FFmpeg; ref=$FF_SERIES9 ;;
+          sky61)   repo=skyjet18/FFmpeg;  ref=$FF_SKY61 ;;
+        esac
+        case ${{ matrix.target }} in
+          arm)  arch=armhf;  q=arm ;;
+          mips) arch=mipsel; q=mipsel ;;
+        esac
+        {
+          echo "TREE=$tree"
+          echo "VARIANT=${build#*-}"
+          echo "FF_REPO=$repo"
+          echo "FF_REF=$ref"
+          echo "DEB_ARCH=$arch"
+          echo "QEMU=$q"
+        } >> "$GITHUB_ENV"
+    - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ env.FF_REPO }}
+        ref: ${{ env.FF_REF }}
+        path: src/${{ env.TREE }}
+    - uses: actions/download-artifact@v4
+      with:
+        name: rootfs-${{ env.DEB_ARCH }}
+        path: /tmp/rootfs
+    - name: Unpack the userland
+      run: |
+        set -eux
+        sudo apt-get update -q
+        sudo apt-get install -y -q qemu-user-static zstd
+        bash .github/oldtoolchain/binfmt.sh $QEMU
+        sudo mkdir -p /opt/oldroot
+        sudo tar --numeric-owner -I zstd -xpf /tmp/rootfs/rootfs-$DEB_ARCH.tar.zst -C /opt/oldroot
+        rm -f /tmp/rootfs/rootfs-$DEB_ARCH.tar.zst
+        sudo mount -t proc proc /opt/oldroot/proc
+        sudo mkdir -p /opt/oldroot/w
+        sudo mount --bind "$GITHUB_WORKSPACE" /opt/oldroot/w
+        sudo chroot /opt/oldroot /bin/bash /versions.sh
+        git -C src/$TREE log -1 --format='%H %s'
+        git log -1 --format='%H %s'
+    - name: Configure, compile, start
+      run: |
+        set -ux
+        python3 .github/oldtoolchain/https_server.py /opt/oldroot/samples /opt/oldroot/samples/cert.pem 8443 > /tmp/https.log 2>&1 &
+        sleep 2
+        curl -sk -o /dev/null -w 'https server: %{http_code}\n' https://127.0.0.1:8443/hls/master.m3u8
+        sudo chroot /opt/oldroot /usr/bin/env HTTPS_PORT=8443 MAKE_MINUTES=250 /bin/bash /w/.github/oldtoolchain/build.sh ${{ matrix.target }} $TREE $VARIANT
+        sudo chown -R "$(id -u)" out || true
+        tail -5 /tmp/https.log || true
+        while read -r line; do
+          echo "::notice::${{ matrix.target }} ${{ matrix.build }}: $line"
+        done < <(grep -E '^(cfg_main|cfg_main_fail[0-9]*|std|make|player_build|run_ffmpeg_version|run_hls_https|run_dash_https|run_pkg_selftest|stage)=' out/result.txt | cut -c1-300)
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: result-${{ matrix.target }}-${{ matrix.build }}
+        path: |
+          out
+          !out/package-*.tar.gz
+        retention-days: 30
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: package-${{ matrix.target }}-${{ matrix.build }}
+        path: out/package-*.tar.gz
+        if-no-files-found: ignore
+        retention-days: 30
+
+  summary:
+    name: summary
+    needs: build
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: result-*
+        path: results
+    - name: Table
+      run: |
+        python3 .github/oldtoolchain/summary.py results | tee summary.md
+        cat summary.md >> "$GITHUB_STEP_SUMMARY"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: summary
+        path: summary.md
+        retention-days: 30
