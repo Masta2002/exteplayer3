@@ -1,0 +1,119 @@
+name: FFmpeg 9 series, cases of the receiver test
+
+# The network cases of the receiver test (skyjet18/exteplayer3 186 against
+# FFmpeg 6.1 and against the series on a Vu+ Uno 4K SE) that failed with the
+# series only, read here without a receiver: boxplay.c makes the calls of
+# the player, ep3http.py and genmedia_net.py are the test server and the
+# media generator of the receiver test. Two builds are compared: the series
+# as it was tested on the receiver (.github/ffmpeg9-box/ffmpeg-commit-old)
+# and the commit in .github/ffmpeg9-box/ffmpeg-commit. Builds and media are
+# cached, a run
+# takes a few minutes.
+
+on:
+  push:
+    paths:
+      - '.github/ffmpeg9-box/**'
+      - '.github/workflows/ffmpeg9-exp.yml'
+  workflow_dispatch:
+
+jobs:
+  cases:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Commits
+      id: pin
+      run: |
+        echo "new=$(cat .github/ffmpeg9-box/ffmpeg-commit)" >> "$GITHUB_OUTPUT"
+        echo "old=$(cat .github/ffmpeg9-box/ffmpeg-commit-old)" >> "$GITHUB_OUTPUT"
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential pkg-config nasm valgrind \
+          libxml2-dev libssl-dev zlib1g-dev libx264-dev
+
+    - name: Build of the series (cache)
+      id: cnew
+      uses: actions/cache@v4
+      with:
+        path: ~/ff-new
+        key: ffbox-${{ steps.pin.outputs.new }}
+
+    - name: Build of the receiver test state (cache)
+      id: cold
+      uses: actions/cache@v4
+      with:
+        path: ~/ff-old
+        key: ffbox-${{ steps.pin.outputs.old }}
+
+    - name: Source of the series
+      if: steps.cnew.outputs.cache-hit != 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: Masta2002/FFmpeg
+        ref: ${{ steps.pin.outputs.new }}
+        path: src-new
+
+    - name: Source of the receiver test state
+      if: steps.cold.outputs.cache-hit != 'true'
+      uses: actions/checkout@v4
+      with:
+        repository: Masta2002/FFmpeg
+        ref: ${{ steps.pin.outputs.old }}
+        path: src-old
+
+    - name: Build what is not cached
+      run: |
+        set -eu
+        for l in new old; do
+          if [ -d src-$l ]; then
+            (cd src-$l &&
+             ./configure --prefix=$HOME/ff-$l --enable-shared --disable-static --disable-doc \
+               --enable-gpl --enable-version3 --enable-libxml2 --enable-openssl --enable-libx264 --enable-zlib > /dev/null &&
+             make -j$(nproc) install > /dev/null 2> ../make-$l.err) || { tail -40 make-$l.err; exit 1; }
+          fi
+          ls $HOME/ff-$l/lib | head -3
+        done
+
+    - name: Media (cache)
+      id: cmedia
+      uses: actions/cache@v4
+      with:
+        path: .github/ffmpeg9-box/media4/net
+        key: boxmedia-${{ hashFiles('.github/ffmpeg9-box/genmedia_net.py') }}
+
+    - name: Generate the media
+      if: steps.cmedia.outputs.cache-hit != 'true'
+      run: |
+        set -eux
+        cd .github/ffmpeg9-box
+        pip install --quiet --target ffpy imageio-ffmpeg==0.8.1 || pip install --quiet --target ffpy imageio-ffmpeg
+        ls -l ffpy/imageio_ffmpeg/binaries
+        python3 genmedia_net.py
+        rm -rf media4/_src
+        du -sh media4/net
+
+    - name: The cases with both builds
+      run: |
+        set -u
+        B=$PWD/.github/ffmpeg9-box
+        bash $B/exp.sh old $HOME/ff-old $B/media4 $PWD/out 8099 2>&1 | tee out_old.txt
+        bash $B/exp.sh new $HOME/ff-new $B/media4 $PWD/out 8098 2>&1 | tee out_new.txt
+        echo "=================== differences (old | new)"
+        for f in out/*__new.txt; do
+          o=${f%__new.txt}__old.txt
+          if ! cmp -s $o $f; then echo "--- $(basename ${f%__new.txt})"; diff $o $f || true; fi
+        done
+
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: box-cases
+        path: |
+          out
+          out_old.txt
+          out_new.txt
