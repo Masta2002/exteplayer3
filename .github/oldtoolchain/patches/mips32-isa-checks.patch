@@ -1,0 +1,26 @@
+configure: check the MIPS32 R5/R6 ISA level again
+
+"OE-A: 0005-mips64-cpu-detection" (and skyjet18's 6.1 commit 26fa6ac2b1
+"configure: fix mips64 cpu detection") remove the toolchain checks of
+mips32r6 and mips32r5 together with the mips64r6 one. Without them both
+stay enabled on every 32-bit MIPS build that does not pass
+--disable-mips32r5/--disable-mips32r6, so with the FPU inline assembly
+configure adds -mfp64 and every link against the FP32 C library fails
+("linking -mfp64 module with previous -mfp32 modules"); configure then
+reports libxml2 as missing and finally stops at "Building with assembly
+enabled is not supported on platforms without aligned memory allocations".
+Keep the mips64 change, restore the two mips32 checks.
+
+--- a/configure
++++ b/configure
+@@ -6731,6 +6731,10 @@ elif enabled mips; then
+
+         disable mips32r6 && disable mips32r5 && disable mips32r2
+     else
++        enabled mips32r6 && check_inline_asm mips32r6 '"aui $0, $0, 0"' &&
++            disable mips32r5 && disable mips32r2
++
++        enabled mips32r5 && check_inline_asm mips32r5 '"eretnc"'
+         enabled mips32r2 && check_inline_asm mips32r2 '"ext $0, $0, 0, 1"'
+
+         disable mips64r6 && disable mips64r5 && disable mips64r2

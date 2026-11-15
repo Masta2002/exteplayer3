@@ -51,12 +51,12 @@ for (target, build), (d, _) in sorted(results.items()):
 
 print('## Series compared with the tree without it\n')
 for target in sorted({t for t, _ in results}):
-    for variant in ('sky', 'asm224'):
+    for series, variant in (('series9', 'sky'), ('series9', 'asm224'), ('series9fix', 'asm224')):
         a = results.get((target, 'stock9-' + variant))
-        b = results.get((target, 'series9-' + variant))
+        b = results.get((target, series + '-' + variant))
         if not a or not b:
             continue
-        print('### %s %s\n' % (target, variant))
+        print('### %s %s, %s\n' % (target, variant, series))
         for key in sorted(set(a[0]) | set(b[0])):
             if key in ('tree', 'make_minutes', 'warnings', 'cfg_components') or key.startswith('run_ffmpeg_version'):
                 continue

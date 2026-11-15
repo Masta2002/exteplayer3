@@ -61,6 +61,13 @@ jobs:
       matrix:
         target: [arm, mips]
         build: [stock9-sky, series9-sky, sky61-sky, stock9-asm224, series9-asm224]
+        include:
+          # 6.1 with the same MIPS options, and the series with the MIPS32 ISA
+          # checks restored (.github/oldtoolchain/patches/mips32-isa-checks.patch)
+          - target: mips
+            build: sky61-asm224
+          - target: mips
+            build: series9fix-asm224
     steps:
     - name: Select
       run: |
@@ -68,7 +75,7 @@ jobs:
         tree=${build%-*}
         case $tree in
           stock9)  repo=skyjet18/FFmpeg;  ref=$FF_STOCK9 ;;
-          series9) repo=Masta2002/FFmpeg; ref=$FF_SERIES9 ;;
+          series9|series9fix) repo=Masta2002/FFmpeg; ref=$FF_SERIES9 ;;
           sky61)   repo=skyjet18/FFmpeg;  ref=$FF_SKY61 ;;
         esac
         case ${{ matrix.target }} in
@@ -89,6 +96,9 @@ jobs:
         repository: ${{ env.FF_REPO }}
         ref: ${{ env.FF_REF }}
         path: src/${{ env.TREE }}
+    - name: Patch
+      if: env.TREE == 'series9fix'
+      run: git -C src/$TREE apply -v "$GITHUB_WORKSPACE/.github/oldtoolchain/patches/mips32-isa-checks.patch"
     - uses: actions/download-artifact@v4
       with:
         name: rootfs-${{ env.DEB_ARCH }}

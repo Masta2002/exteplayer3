@@ -20,6 +20,7 @@ OUT=/w/out
 B=/b
 J=$(nproc)
 RES=$OUT/result.txt
+git config --global --add safe.directory '*' 2> /dev/null
 rm -rf $OUT $B
 mkdir -p $OUT $B
 : > $RES
@@ -147,8 +148,20 @@ configure_loop() {
         lib=$(echo "$msg" | sed -n 's/^ERROR: \([A-Za-z0-9_.+-]*\).*not found.*/\1/p')
         if [ -n "$opt" ]; then
             drop "$opt" || return 1
+        elif echo "$msg" | grep -q 'X264_BUILD'; then
+            drop --enable-libx264 || return 1
         elif echo "$msg" | grep -qi openssl && [ -z "$PKGP" ]; then
             PKGP=/opt/ossl111/lib/pkgconfig
+            # the libraries of /opt/ossl111 before those of the system (1.0.1t),
+            # pkg-config of libxml2/zlib puts -L/usr/lib/<triplet> in front
+            local a new=()
+            for a in "${ARGS[@]}"; do
+                case $a in
+                    --extra-ldflags=*) a="--extra-ldflags=-L/opt/ossl111/lib -Wl,-rpath-link,/opt/ossl111/lib ${a#--extra-ldflags=}" ;;
+                esac
+                new+=("$a")
+            done
+            ARGS=("${new[@]}")
             res openssl_used "$(LD_LIBRARY_PATH=/opt/ossl111/lib /opt/ossl111/bin/openssl version) from /opt/ossl111 ($(cat /opt/ossl111/BUILD)), the system's $(dpkg-query -W -f='${Version}' libssl-dev) was rejected"
         elif [ -n "$lib" ]; then
             case $lib in
@@ -228,7 +241,7 @@ run() {
 if [ -x $ROOT/usr/bin/ffmpeg ]; then
     echo "======== programs under qemu-user"
     run ffmpeg_version $ROOT/usr/bin/ffmpeg -version
-    run protocols sh -c "$ROOT/usr/bin/ffmpeg -hide_banner -protocols 2>/dev/null | tr -d ' ' | grep -xE 'https|tls|http|hls|crypto|rtmp|rtmps|dtls' | sort -u | tr '\n' ' '"
+    run protocols sh -c "$ROOT/usr/bin/ffmpeg -hide_banner -protocols 2>/dev/null | tr -d ' ' | grep -xE 'https|tls|http|hls|crypto|rtmp|rtmps|ffrtmp|ffrtmps|librtmp|dtls' | sort -u | tr '\n' ' '"
     run demuxers sh -c "$ROOT/usr/bin/ffmpeg -hide_banner -demuxers 2>/dev/null | grep -E '^ *D[ A-Za-z]* (hls|dash|mpegts|mov,mp4,m4a,3gp,3g2,mj2|matroska,webm) ' | awk '{print \$2}' | tr '\n' ' '"
     PROBE="$ROOT/usr/bin/ffprobe -v error -count_frames -show_entries stream=codec_name,width,nb_read_frames -of csv=p=0"
     run hls_file $PROBE /samples/hls/master.m3u8
@@ -305,13 +318,18 @@ fi
 if [ $VARIANT = sky ] && [ -n "$PKGP" ] && [ -f $B/ffbuild/config.mak ]; then
     echo "======== tls_openssl.c against the OpenSSL $(dpkg-query -W -f='${Version}' libssl-dev) of the system"
     cd $B
-    CMD=$(make -n V=1 -W $SRC/libavformat/tls_openssl.c libavformat/tls_openssl.o 2> /dev/null | grep 'tls_openssl\.c' | head -1 |
-        sed 's#-I/opt/ossl111/include##g; s#-o libavformat/tls_openssl.o#-o /tmp/tls_old.o#; s#-MF [^ ]*#-MF /tmp/tls_old.d#')
-    echo "$CMD"
-    sh -c "$CMD" > $OUT/tls_openssl_old.log 2>&1
-    trc=$?
-    grep -E 'error' $OUT/tls_openssl_old.log | sed "s#$SRC/##g" | head -30
-    res tls_openssl_old "exit $trc, $(grep -c 'error' $OUT/tls_openssl_old.log) errors: $(grep 'error' $OUT/tls_openssl_old.log | sed 's/^[^ ]*: error: //' | sort -u | head -8 | tr '\n' '|' | cut -c1-600)"
+    printf 'include %s\nall:\n\t@echo $(CC) $(CPPFLAGS) $(CFLAGS)\n' "$B/ffbuild/config.mak" > /tmp/flags.mak
+    FL=$(make -s -f /tmp/flags.mak | sed 's#-I/opt/ossl111/include##g')
+    for hdr in old new; do
+        INC=""
+        [ $hdr = new ] && INC=-I/opt/ossl111/include
+        CMD="$FL $INC -DHAVE_AV_CONFIG_H -I. -I$SRC -c $SRC/libavformat/tls_openssl.c -o /tmp/tls_$hdr.o"
+        echo "---- $hdr: $CMD"
+        sh -c "$CMD" > $OUT/tls_openssl_$hdr.log 2>&1
+        trc=$?
+        grep -E 'error' $OUT/tls_openssl_$hdr.log | sed "s#$SRC/##g" | head -40
+        res tls_openssl_$hdr "exit $trc, $(grep -c 'error' $OUT/tls_openssl_$hdr.log) errors: $(grep 'error' $OUT/tls_openssl_$hdr.log | sed 's/^[^ ]*: error: //' | sort -u | head -12 | tr '\n' '|' | cut -c1-900)"
+    done
     cd /
 fi
 
@@ -326,7 +344,12 @@ if [ ${#EXTRAS[@]} -gt 0 ]; then
         ARGS+=(--enable-gnutls)
         PKGSAVE=$PKGP
         PKGP=""
-        configure_loop gnutls /b3
+        if configure_loop gnutls /b3; then
+            ( cd /b3 && make V=1 libavformat/tls_gnutls.o libavformat/tls.o ) > $OUT/tls_gnutls.log 2>&1
+            grc=$?
+            grep -E 'error' $OUT/tls_gnutls.log | sed "s#$SRC/##g" | head -20
+            res tls_gnutls_compile "exit $grc, $(grep -c 'error' $OUT/tls_gnutls.log) errors: $(grep 'error' $OUT/tls_gnutls.log | sed 's/^[^ ]*: error: //' | sort -u | head -8 | tr '\n' '|' | cut -c1-600)"
+        fi
         res cfg_gnutls_version "$(pkg-config --modversion gnutls)"
         PKGP=$PKGSAVE
     fi
