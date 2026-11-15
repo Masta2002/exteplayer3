@@ -366,8 +366,8 @@ stage_qemu() {
     notice "ARM ffprobe/ffmpeg of the bundle under qemu, $2$u: $t; $f video frames decoded, $(grep -c . dec.err || true) lines of errors"
   }
   # local files: from inside their directory
-  (cd s/hls && check master.m3u8 "local, in its directory: ")
-  (cd s/dash && check dash.mpd "local, in its directory: ")
+  (cd s/hls; check master.m3u8 "local, in its directory: ")
+  (cd s/dash; check dash.mpd "local, in its directory: ")
   for u in http://127.0.0.1:8089/s/hls/master.m3u8 http://127.0.0.1:8089/s/dash/dash.mpd \
            https://127.0.0.1:8443/s/hls/master.m3u8 https://127.0.0.1:8443/s/dash/dash.mpd; do
     check "$u" ""
