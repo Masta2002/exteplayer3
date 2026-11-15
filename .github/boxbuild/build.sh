@@ -35,7 +35,7 @@ stage_sysroot() {
   python3 "$HERE/mksysroot.py" --list "$W/sysroot.list" "$SR" "$FEEDS" \
     libc6 libc6-dev linux-libc-headers-dev libgcc1 libgcc-s-dev libstdc++6 \
     libz-dev bzip2-dev xz-dev openssl-dev libxml2-dev libbluray-dev libudfread-dev \
-    rtmpdump-dev libfreetype-dev libsrt-dev libtheora-dev libx264-dev x265-dev \
+    rtmpdump-dev libgmp-dev libfreetype-dev libsrt-dev libtheora-dev libx264-dev x265-dev \
     libasound-dev libxcb-dev libxv-dev libx11-dev libxext-dev
   cp "$W/sysroot.list" "$W/sysroot-build.list"
   wc -l "$W/sysroot.list"
