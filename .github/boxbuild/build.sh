@@ -93,7 +93,7 @@ EOF
   # every header and every file the linker loaded is from the sysroot or
   # from the compiler's own directory
   grep -E '^\.+ ' hello.H | awk '{print $2}' | sort -u > hello.headers
-  grep '^LOAD ' hello.map | awk '{print $2}' | sort -u > hello.loaded
+  grep '^LOAD /' hello.map | awk '{print $2}' | sort -u > hello.loaded
   cat hello.loaded
   bad=$(cat hello.headers hello.loaded | grep -v "^$SR/" | grep -v "^$GCCDIR/" | grep -v '^/tmp/' || true)
   if [ -n "$bad" ]; then echo "files from outside the sysroot:"; echo "$bad"; exit 1; fi
