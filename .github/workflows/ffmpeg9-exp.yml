@@ -109,6 +109,47 @@ jobs:
           if ! cmp -s $o $f; then echo "--- $(basename ${f%__new.txt})"; diff $o $f || true; fi
         done
 
+    # The live HLS stream that ends, with the player itself (host build,
+    # outputs to /dev/null) under valgrind: on the receiver the player
+    # built against the series ended with SIGSEGV in this case.
+    - name: skyjet18/exteplayer3 on the live HLS stream that ends (information)
+      if: always()
+      run: |
+        set +e -ux
+        B=$PWD/.github/ffmpeg9-box
+        git clone --depth 1 https://github.com/skyjet18/exteplayer3 skyjet
+        cd skyjet
+        for l in old new; do
+          P=$HOME/ff-$l
+          gcc -O1 -g -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE -D_LARGEFILE_SOURCE -DHAVE_FLV2MPEG4_CONVERTER \
+            -DEXTEPLAYER_FAKE_VIDEO='"/dev/null"' -DEXTEPLAYER_FAKE_AUDIO='"/dev/null"' -DEXTEPLAYER_TERM_SOCKET='""' \
+            -Wno-deprecated-declarations -Iinclude -Iexternal -Iexternal/flv2mpeg4 \
+            $(PKG_CONFIG_PATH=$P/lib/pkgconfig pkg-config --cflags libavformat libavcodec libswresample libswscale libavutil) \
+            main/exteplayer.c tools/debug.c tools/strbuffer.c tools/pcm_export.c \
+            container/container.c container/container_ffmpeg.c \
+            manager/manager.c manager/audio.c manager/video.c manager/subtitle.c \
+            playback/playback.c output/output.c output/output_subtitle.c output/graphic_subtitle.c \
+            output/linuxdvb_fake.c output/linuxdvb_buffering.c \
+            output/writer/common/pes.c output/writer/common/misc.c output/writer/common/writer.c \
+            output/writer/mipsel/*.c external/ffmpeg/src/bitstream.c \
+            external/ffmpeg/src/latmenc.c external/ffmpeg/src/mpeg4audio.c \
+            external/flv2mpeg4/src/*.c external/plugins/src/png.c \
+            $(PKG_CONFIG_PATH=$P/lib/pkgconfig pkg-config --libs libavformat libavcodec libswresample libswscale libavutil) \
+            -pthread -lm -ldl -o ../exteplayer3_$l 2> ../player_build_$l.err || { tail -20 ../player_build_$l.err; continue; }
+          EP3_ROOT=$B/media4 python3 $B/ep3http.py 8097 ../out/srv_player_$l.log 2> /dev/null &
+          SRV=$!
+          sleep 1
+          for tool in "" "valgrind -q --num-callers=30"; do
+            (sleep 60) | LD_LIBRARY_PATH=$P/lib timeout -k 5 90 $tool ../exteplayer3_$l \
+              "http://127.0.0.1:8097/hlive/index.m3u8?win=6&end=30&s=p$l${tool:+v}" > ../out/player_${l}${tool:+_vg}.out 2> ../out/player_${l}${tool:+_vg}.err
+            echo "== player with the $l build${tool:+ under valgrind}: exit $?"
+            tail -5 ../out/player_${l}${tool:+_vg}.out
+            tail -40 ../out/player_${l}${tool:+_vg}.err | cut -c1-300
+          done
+          kill $SRV
+        done
+        exit 0
+
     - uses: actions/upload-artifact@v4
       if: always()
       with:

@@ -11,7 +11,8 @@
  *   d     print duration and seekability
  * After every command one line: what was read (packets per media type, the
  * first and last timestamp in ms relative to the start time) and the return
- * value of the last call. The audio stream used for the timestamps is the
+ * value of the last call; before it a line for every jump of the timestamps
+ * of a stream by more than 1.5 s. The audio stream used for the timestamps is the
  * first one, the others are discarded as the player does. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +41,7 @@ static void read_packets(const char *cmd, int mode, int64_t n)
 {
     AVPacket *pkt = av_packet_alloc();
     int64_t first[2] = {-1, -1}, last[2] = {-1, -1};
-    int count[3] = {0}, ret = 0;
+    int count[3] = {0}, seen[2] = {0}, jumps = 0, ret = 0;
     int64_t i;
 
     for (i = 0; mode ? i < 100000 : i < n; i++) {
@@ -52,8 +53,12 @@ static void read_packets(const char *cmd, int mode, int64_t n)
         count[k]++;
         if (k < 2) {
             int64_t t = ms(pkt);
-            if (first[k] < 0)
+            if (!seen[k])
                 first[k] = t;
+            else if ((t < last[k] - 1500 || t > last[k] + 1500) && jumps++ < 12)
+                printf("  %s jumps from %"PRId64" to %"PRId64" ms (packet %"PRId64")\n",
+                       k ? "audio" : "video", last[k], t, i);
+            seen[k] = 1;
             last[k] = t;
             if (mode == 2 && t >= n) {
                 av_packet_unref(pkt);
