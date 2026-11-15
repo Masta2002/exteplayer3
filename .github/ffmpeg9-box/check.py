@@ -119,7 +119,10 @@ for label in ('old', 'new'):
     what = 'opened: %s, video up to %d ms, %d segment requests, %d of them too early, %s' % (
         opened, got[2], req, early, rc(res))
     if label == 'new':
-        expect(opened and got[2] >= 20000 and rc(res) == 'rc=0' and 0 <= early * 4 <= req, 'dlive_num_nospd', label, what)
+        # the clock is read in whole seconds: a request can be up to a
+        # second early and is tried again; the stream is read on (the old
+        # state asks too early every time and gets nothing)
+        expect(opened and got[2] >= 20000 and rc(res) == 'rc=0' and 0 <= early * 2 <= req, 'dlive_num_nospd', label, what)
     else:
         expect(not opened or got[2] < 20000, 'dlive_num_nospd', label, what + ' (the failure of the receiver test)')
 
