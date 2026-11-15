@@ -11,8 +11,11 @@ name: FFmpeg 9 patch series on release/9.0-patched
 # below is the number of its commits on top of the base.
 # FF_OLD is the series before the commits ported from release/6.1-patched
 # in November (preselection, subtitle discard, AAC dejitter, DASH live
-# start, seeks and retries, stream identities, the tests): the series as
-# it is must read the comparison streams exactly as that state did.
+# start, seeks and retries, stream identities, the tests) and before the
+# fixes for the failures of the receiver test: the series as it is must
+# read the comparison streams exactly as that state did. That state is
+# also the one that was tested on a receiver; the cases that failed there
+# are in the workflow ffmpeg9-exp.yml, which runs on the same commit.
 
 on:
   push:
@@ -23,7 +26,7 @@ on:
 
 env:
   FF_BASE: d838f9f9aeb0e09b4d068e2af20a46a12640696f
-  FF_COUNT: 62
+  FF_COUNT: 66
   FF_OLD: 53fe5fa66e
 
 jobs:
@@ -909,7 +912,20 @@ jobs:
         cmpold hls3_one   50 -i ../po/master.m3u8 -map 0:a:1
         cmpold dash_all  300 -i ../pd/dash.mpd -map 0
         cmpold dash_seek  50 -ss 3.3 -i ../pd/dash.mpd -map 0 -t 2
-        cmpold dashsub_all 300 -allowed_extensions ALL -i ../pd/sub.mpd -map 0
+        cmpold dashsub_av 300 -allowed_extensions ALL -i ../pd/sub.mpd -map 0:v -map 0:a
+        # With the subtitle stream read as well: its SegmentTemplate with a
+        # duration asks for a segment past its end. In the earlier state
+        # that ended the whole stream with an error, audio and video lost
+        # their last packets; now only the subtitle representation ends.
+        for lib in REF NEW; do
+          LD_LIBRARY_PATH=${!lib} tmo ./ffmpeg -nostdin -v error -flags +bitexact -allowed_extensions ALL -i ../pd/sub.mpd -map 0 \
+              -c copy -fflags +bitexact -f framecrc - > ../old_dashsub_$lib.txt 2> ../old_dashsub_$lib.err || true
+        done
+        av() { grep -c '^[01],' $1 || true; }
+        tail -3 ../old_dashsub_REF.err
+        test "$(av ../old_dashsub_NEW.txt)" = "$(grep -vc '^#' ../old_dash_all_NEW.txt)"
+        test "$(grep -c '^2,' ../old_dashsub_NEW.txt)" -ge 3
+        echo "::notice::DASH with subtitle segments, all streams: $(av ../old_dashsub_NEW.txt) audio and video packets and $(grep -c '^2,' ../old_dashsub_NEW.txt) cues; the earlier state stopped after $(av ../old_dashsub_REF.txt) audio and video packets"
         for lib in REF NEW; do
           LD_LIBRARY_PATH=${!lib} tmo ./ffmpeg -nostdin -v error -i ../pj/in.mkv -c copy -flags +bitexact -fflags +bitexact -f mpegts -y ../old_mux_$lib.ts
         done

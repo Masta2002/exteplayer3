@@ -6,14 +6,27 @@ name: FFmpeg 9 series, cases of the receiver test
 # the player, ep3http.py and genmedia_net.py are the test server and the
 # media generator of the receiver test. Two builds are compared: the series
 # as it was tested on the receiver (.github/ffmpeg9-box/ffmpeg-commit-old)
-# and the commit in .github/ffmpeg9-box/ffmpeg-commit. Builds and media are
-# cached, a run
-# takes a few minutes.
+# and the commit the main workflow tests
+# (.github/ffmpeg9-tests/ffmpeg-commit). check.py is the verdict: the
+# earlier build has to show the failures of the receiver (the cases
+# reproduce them), the current one must not:
+# - DASH VOD (SegmentTimeline, SegmentList, single file with SegmentBase):
+#   seeks after the stream was read to its end
+# - HLS VOD with #EXT-X-DISCONTINUITY and a part 1000 s later: continuous
+#   timestamps while reading through and after seeks
+# - live DASH, SegmentTemplate with a duration, no
+#   suggestedPresentationDelay: starts, and reads on at the live edge
+# - hls_audio_default_only
+# - live HLS that ends: under valgrind, with reads after the end (the
+#   SIGSEGV of the receiver is not reproduced by it, also not by the player
+#   itself in the last step)
+# Builds and media are cached, a run takes a few minutes.
 
 on:
   push:
     paths:
       - '.github/ffmpeg9-box/**'
+      - '.github/ffmpeg9-tests/ffmpeg-commit'
       - '.github/workflows/ffmpeg9-exp.yml'
   workflow_dispatch:
 
@@ -27,7 +40,7 @@ jobs:
     - name: Commits
       id: pin
       run: |
-        echo "new=$(cat .github/ffmpeg9-box/ffmpeg-commit)" >> "$GITHUB_OUTPUT"
+        echo "new=$(cat .github/ffmpeg9-tests/ffmpeg-commit)" >> "$GITHUB_OUTPUT"
         echo "old=$(cat .github/ffmpeg9-box/ffmpeg-commit-old)" >> "$GITHUB_OUTPUT"
 
     - name: Install dependencies
@@ -108,6 +121,12 @@ jobs:
           o=${f%__new.txt}__old.txt
           if ! cmp -s $o $f; then echo "--- $(basename ${f%__new.txt})"; diff $o $f || true; fi
         done
+
+    - name: Verdict
+      run: |
+        python3 .github/ffmpeg9-box/check.py out | tee verdict.txt
+        test "${PIPESTATUS[0]}" = 0
+        grep '^ok ' verdict.txt | sed 's/^ok  */::notice::/'
 
     # The live HLS stream that ends, with the player itself (host build,
     # outputs to /dev/null) under valgrind: on the receiver the player
