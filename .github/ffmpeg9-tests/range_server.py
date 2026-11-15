@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """Static HTTP server with byte ranges for the CI checks of single-file DASH
-(http.server of Python ignores Range). usage: range_server.py <port> [1.1]
-With 1.1 the server speaks HTTP/1.1 and keeps connections open."""
+(http.server of Python ignores Range). usage: range_server.py <port> [1.1 [log]]
+With 1.1 the server speaks HTTP/1.1 and keeps connections open. With a log
+file every requested path is appended to it, one per line."""
 import http.server
 import os
 import re
 import sys
 
+LOG = sys.argv[3] if len(sys.argv) > 3 else None
+
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def send_head(self):
         self.left = None
+        if LOG:
+            with open(LOG, 'a') as log:
+                log.write(self.path + '\n')
         path = self.translate_path(self.path)
         m = re.match(r'bytes=(\d+)-(\d*)$', self.headers.get('Range', ''))
         if not m or not os.path.isfile(path):

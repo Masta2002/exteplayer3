@@ -2,12 +2,17 @@ name: FFmpeg 9 patch series on release/9.0-patched
 
 # Builds the patch series as a git branch: Masta2002/FFmpeg
 # ci/sky-9.0-patched = skyjet18/FFmpeg release/9.0-patched (upstream
-# release/9.0, d838f9f9ae) + 51 commits (OE-A's FFmpeg 9 patches plus the
-# ffmpeg-ext ones ported to 9). Then exteplayer3 against it, and small
+# release/9.0, d838f9f9ae) + FF_COUNT commits (OE-A's FFmpeg 9 patches plus
+# the ffmpeg-ext ones ported to 9). Then exteplayer3 against it, and small
 # checks of the patched demuxers; the tree without the series is
 # release/9.0-patched itself.
 # .github/ffmpeg9-tests/ffmpeg-commit holds the commit of the branch that
-# is tested: a new state of the series is a new commit here.
+# is tested: a new state of the series is a new commit here, and FF_COUNT
+# below is the number of its commits on top of the base.
+# FF_OLD is the series before the commits ported from release/6.1-patched
+# in November (preselection, subtitle discard, AAC dejitter, DASH live
+# start, seeks and retries, stream identities, the tests): the series as
+# it is must read the comparison streams exactly as that state did.
 
 on:
   push:
@@ -18,11 +23,13 @@ on:
 
 env:
   FF_BASE: d838f9f9aeb0e09b4d068e2af20a46a12640696f
+  FF_COUNT: 61
+  FF_OLD: 53fe5fa66e
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 100
     steps:
     - uses: actions/checkout@v4
 
@@ -36,7 +43,7 @@ jobs:
         repository: Masta2002/FFmpeg
         ref: ci/sky-9.0-patched
         path: ffsrc
-        fetch-depth: 60
+        fetch-depth: 100
 
     - name: Tree without the series (skyjet18/FFmpeg release/9.0-patched)
       uses: actions/checkout@v4
@@ -70,17 +77,20 @@ jobs:
           libxml2-dev libssl-dev libbluray-dev librtmp-dev libudfread-dev \
           zlib1g-dev libbz2-dev liblzma-dev libx264-dev
 
-    # The branch is the pinned commit and is the base plus 51 commits. The
-    # later steps take single commits out of the build tree again: their
-    # diffs are written to ffpatches/ under the numbers the patch files had.
+    # The branch is the pinned commit and is the base plus FF_COUNT commits,
+    # with FF_OLD among them. The later steps take single commits out of a
+    # build tree again: their diffs are written to ffpatches/ under the
+    # numbers the patch files had.
     - name: The series
       run: |
         set -eux
         cd ffsrc
         test "$(git rev-parse HEAD)" = "${{ steps.pin.outputs.sha }}"
         test "$(git -C ../ffvan rev-parse HEAD)" = $FF_BASE
-        test "$(git rev-parse HEAD~51)" = $FF_BASE
-        test "$(git rev-list --count $FF_BASE..HEAD)" = 51
+        test "$(git rev-parse HEAD~$FF_COUNT)" = $FF_BASE
+        test "$(git rev-list --count $FF_BASE..HEAD)" = $FF_COUNT
+        git merge-base --is-ancestor $FF_OLD HEAD
+        echo "::notice::series ${{ steps.pin.outputs.sha }}: $FF_COUNT commits on $FF_BASE, $(git rev-list --count $FF_OLD..HEAD) of them after $FF_OLD"
         git log --format='%h %an: %s' $FF_BASE..HEAD
         git diff --stat $FF_BASE HEAD | tail -1
         # no line of the series ends in a carriage return
@@ -106,6 +116,35 @@ jobs:
           --enable-gpl --enable-version3 --enable-libxml2 --enable-openssl --enable-libx264 --enable-zlib \
           --extra-cflags="-Werror=implicit-function-declaration -Werror=incompatible-pointer-types -Werror=int-conversion"
         make -j$(nproc) install
+
+    # The unit tests that came with the commits ported from
+    # release/6.1-patched (they include hls.c / dashdec.c and call their
+    # functions): preselection by hls_quality_mode and
+    # hls_audio_default_only, a media sequence that restarted, stream
+    # identities, seeks with excluded playlists; DASH live start, seeks,
+    # the retry of a live fragment, dash_subtitle_default_discard; the AAC
+    # dejitter of the MPEG-TS muxer (and none by default); E-AC-3 known
+    # from stream type 0x87 alone. Every target runs, the step fails at
+    # the end if one of them did.
+    - name: FATE tests of the commits ported from release/6.1-patched
+      run: |
+        set -ux
+        cd ffsrc
+        export LD_LIBRARY_PATH=$HOME/ffmpeg/lib
+        make fate-list | grep -E '^fate-(hls-selection|dash-live|mpegtsenc|mpegts-probe)$' | sort | tee ../ported_tests.txt
+        test "$(grep -c . ../ported_tests.txt)" = 4 || exit 1
+        failed=""
+        for t in hls-selection dash-live mpegtsenc mpegts-probe; do
+          if TMO=900 tmo make -j$(nproc) fate-$t; then
+            echo "::notice::fate-$t: passed"
+          else
+            echo "::error::fate-$t failed"
+            cat tests/data/fate/$t.err 2>/dev/null | tail -40
+            failed="$failed $t"
+          fi
+        done
+        # the result is taken at the end of the job, the other steps still run
+        if [ -n "$failed" ]; then echo "FATE tests of the ported commits:$failed" >> $GITHUB_WORKSPACE/deferred_failures.txt; fi
 
     - name: FATE tests of the HLS discontinuity patch
       run: |
@@ -257,6 +296,55 @@ jobs:
         $FF -v error -f lavfi -i testsrc=d=3:s=160x90 -c:v libx264 -encryption_scheme cenc-aes-ctr \
             -encryption_key $K -encryption_kid 0102030405060708090a0b0c0d0e0f10 enc.mp4
         $FF -v error -decryption_key $K -i enc.mp4 -f null -
+
+    # The HTTP tests of release/6.1-patched, unchanged: tests/dash_http.py
+    # and tests/hls_http.py generate streams, serve them from a local HTTP
+    # server and read them with libavformat/tests/dash_http and hls_http.
+    # They were written for the 6.1 code; here they run against the series,
+    # which has the track switch (HLS and DASH) in another form:
+    # - single-file DASH: fractional seeks while the track selected next is
+    #   closed, a switch without a seek, first packets at the position
+    # - a live DASH fragment that answers 404 twice is requested three
+    #   times; missing, 403, VOD and an interrupted wait are not retried
+    # - a manifest replaced during the start: both representations start
+    #   at the same media time; no Range header for whole segments
+    # - HLS with a discontinuity to an advertisement without audio and
+    #   back: one audio and one video stream, the audio returns
+    # - HLS with three audio renditions numbered independently, VOD and
+    #   live window, the selected one changed seven times: the packets of
+    #   the new rendition at the playing position; --realtime: windows
+    #   moved by the clock, renditions switched in after their window passed
+    - name: HTTP tests of release/6.1-patched (tests/dash_http.py, tests/hls_http.py)
+      env:
+        LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
+      run: |
+        set -ux
+        cd ffsrc
+        make -j$(nproc) libavformat/tests/dash_http libavformat/tests/hls_http || {
+          echo "HTTP tests of release/6.1-patched: the test programs did not build" >> $GITHUB_WORKSPACE/deferred_failures.txt
+          exit 0
+        }
+        failed=""
+        run() {
+          n=$1; want=$2; shift 2
+          TMO=900 tmo "$@" > ../http_$n.txt 2>&1
+          rc=$?
+          got=$(grep -c '^PASS' ../http_$n.txt || true)
+          if [ $rc = 0 ] && [ "$got" = "$want" ]; then
+            cat ../http_$n.txt
+            echo "::notice::$n: all $got checks passed"
+          else
+            tail -c 6000 ../http_$n.txt
+            echo "::error::$n: exit $rc, $got of $want checks passed"
+            failed="$failed $n"
+          fi
+        }
+        FFB=$HOME/ffmpeg/bin/ffmpeg
+        run dash_http 6 python3 tests/dash_http.py --ffmpeg $FFB --driver libavformat/tests/dash_http
+        run hls_http 4 python3 tests/hls_http.py --ffmpeg $FFB --driver libavformat/tests/hls_http
+        run hls_http_realtime 2 python3 tests/hls_http.py --realtime --ffmpeg $FFB --driver libavformat/tests/hls_http
+        # the result is taken at the end of the job, the other steps still run
+        if [ -n "$failed" ]; then echo "HTTP tests of release/6.1-patched:$failed" >> $GITHUB_WORKSPACE/deferred_failures.txt; fi
 
     # Patches 0051 (hls) and 0052 (dashdec): a track that the player switches
     # in during playback (AVStream.discard from ALL to DEFAULT) has to arrive,
@@ -418,6 +506,261 @@ jobs:
         done
         exit 0
 
+    # skyjet18/exteplayer3 sets hls_quality_mode (on every input unless a
+    # program or a picture size limit was chosen), hls_audio_default_only
+    # and dash_subtitle_default_discard. The options have to exist (an
+    # option the library does not know is ignored without an error) and to
+    # do what they say, seen from the requests a local HTTP server logs:
+    # - hls_quality_mode 2 / 1: of three variants (BANDWIDTH 600000,
+    #   1200000, 300000 in that order) only the playlist and the segments
+    #   of the highest / lowest are requested, and its packets are those
+    #   of that variant read on its own
+    # - hls_audio_default_only: the rendition without DEFAULT=YES is not
+    #   requested
+    # - dash_subtitle_default_discard: no subtitle packet and no subtitle
+    #   segment after the first one until the player enables the stream
+    # - without the options: every playlist is read, and the packets are
+    #   those of the tree without the series
+    # The AAC dejitter of the MPEG-TS muxer: a Matroska file has AAC
+    # timestamps rounded to milliseconds; with aac_pts_dejitter=60 every
+    # packet of the output is 1920 ticks after the one before, without the
+    # option the output is byte for byte that of the tree without the series.
+    - name: The options skyjet18/exteplayer3 sets, AAC dejitter, defaults unchanged
+      env:
+        LD_LIBRARY_PATH: /home/runner/ffmpeg/lib
+      run: |
+        set -eux
+        FF="tmo $HOME/ffmpeg/bin/ffmpeg"; FP="tmo $HOME/ffmpeg/bin/ffprobe"
+        VAN=""
+        if [ -x ffvan/ffmpeg ]; then VAN="timeout -k 5 120 $PWD/ffvan/ffmpeg"; fi
+        T=$PWD/.github/ffmpeg9-tests
+        for p in opt_check dash_sub; do
+          gcc -O1 -Wall -Werror -o $p $T/$p.c \
+              $(PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig pkg-config --cflags --libs libavformat libavcodec libavutil) -lm
+        done
+        OC="tmo $PWD/opt_check"; DS="tmo $PWD/dash_sub"
+        gen() { $FF -nostdin -v error "$@"; }
+        cnt() { grep -c "$1" "$2" || true; }
+
+        # ---- HLS: three variants, two audio renditions
+        mkdir po && cd po
+        mkdir low mid high a0 a1
+        gen -f lavfi -i testsrc=d=8:s=96x54:r=25   -c:v libx264 -g 25 -b:v 100k -f hls -hls_time 2 -hls_playlist_type vod low/index.m3u8
+        gen -f lavfi -i testsrc=d=8:s=160x90:r=25  -c:v libx264 -g 25 -b:v 300k -f hls -hls_time 2 -hls_playlist_type vod mid/index.m3u8
+        gen -f lavfi -i testsrc=d=8:s=320x180:r=25 -c:v libx264 -g 25 -b:v 600k -f hls -hls_time 2 -hls_playlist_type vod high/index.m3u8
+        gen -f lavfi -i sine=f=440:d=8 -c:a aac -b:a 64k -f hls -hls_time 2 -hls_playlist_type vod a0/index.m3u8
+        gen -f lavfi -i sine=f=880:d=8 -c:a aac -b:a 64k -f hls -hls_time 2 -hls_playlist_type vod a1/index.m3u8
+        {
+          echo '#EXTM3U'
+          echo '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="main",LANGUAGE="en",DEFAULT=YES,AUTOSELECT=YES,URI="a0/index.m3u8"'
+          echo '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="second",LANGUAGE="de",DEFAULT=NO,AUTOSELECT=YES,URI="a1/index.m3u8"'
+          echo '#EXT-X-STREAM-INF:BANDWIDTH=600000,AUDIO="aud"'
+          echo 'mid/index.m3u8'
+          echo '#EXT-X-STREAM-INF:BANDWIDTH=1200000,AUDIO="aud"'
+          echo 'high/index.m3u8'
+          echo '#EXT-X-STREAM-INF:BANDWIDTH=300000,AUDIO="aud"'
+          echo 'low/index.m3u8'
+        } > master.m3u8
+        cat master.m3u8 high/index.m3u8
+        ls -l low mid high a0 a1
+        python3 $T/range_server.py 8092 1.1 $PWD/req.log &
+        SRV1=$!
+        trap 'kill $SRV1 2>/dev/null || true' EXIT
+        sleep 1
+        H=http://127.0.0.1:8092
+        # rd <name> <ffmpeg input options and -map>: packets to <name>.txt,
+        # the paths requested meanwhile to <name>.req
+        rd() {
+          n=$1; shift
+          : > req.log
+          $FF -nostdin -v error -flags +bitexact "$@" -c copy -fflags +bitexact -f framecrc - > $n.txt
+          sort -u req.log > $n.req
+        }
+        streams() { grep -c '^#codec_id' $1.txt; }
+        # segs <dir> <name>: "all" if every segment of the playlist of <dir>
+        # was requested in run <name>, else the number requested
+        segs() {
+          have=$(cnt "^/$1/index[0-9]*\.ts\$" $2.req)
+          if [ "$have" = "$(grep -c '\.ts$' $1/index.m3u8)" ] && [ "$have" -ge 3 ]; then echo all; else echo $have; fi
+        }
+        rd all   -i $H/master.m3u8 -map 0
+        rd q0    -hls_quality_mode 0 -hls_audio_default_only 0 -i $H/master.m3u8 -map 0
+        rd q2    -hls_quality_mode 2 -i $H/master.m3u8 -map 0
+        rd q1    -hls_quality_mode 1 -i $H/master.m3u8 -map 0
+        rd def   -hls_audio_default_only 1 -i $H/master.m3u8 -map 0
+        rd q2def -hls_quality_mode 2 -hls_audio_default_only 1 -i $H/master.m3u8 -map 0
+        rd q2v   -hls_quality_mode 2 -i $H/master.m3u8 -map 0:v
+        rd q1v   -hls_quality_mode 1 -i $H/master.m3u8 -map 0:v
+        rd highv -i $H/high/index.m3u8 -map 0:v
+        rd lowv  -i $H/low/index.m3u8 -map 0:v
+        for n in all q2 q1 def q2def; do echo "== $n: $(streams $n) streams"; cat $n.req; done
+        # without the options: everything
+        test "$(streams all)" = 5
+        for d in low mid high a0 a1; do
+          test "$(cnt "^/$d/index.m3u8\$" all.req)" = 1
+          test "$(segs $d all)" = all
+        done
+        cmp all.txt q0.txt
+        cmp all.req q0.req
+        # hls_quality_mode 2: the highest BANDWIDTH, which is the second entry
+        test "$(streams q2)" = 3
+        test "$(cnt '^/low/\|^/mid/' q2.req)" = 0
+        test "$(segs high q2)" = all
+        test "$(segs a0 q2)" = all
+        test "$(segs a1 q2)" = all
+        cmp q2v.txt highv.txt
+        grep -q '^#dimensions 0: 320x180' q2v.txt
+        # hls_quality_mode 1: the lowest, the last entry
+        test "$(streams q1)" = 3
+        test "$(cnt '^/high/\|^/mid/' q1.req)" = 0
+        test "$(segs low q1)" = all
+        cmp q1v.txt lowv.txt
+        grep -q '^#dimensions 0: 96x54' q1v.txt
+        # hls_audio_default_only: not the rendition without DEFAULT=YES
+        test "$(streams def)" = 4
+        test "$(cnt '^/a1/' def.req)" = 0
+        for d in low mid high a0; do test "$(segs $d def)" = all; done
+        # both: one variant and one rendition
+        test "$(streams q2def)" = 2
+        test "$(grep -vc '^/high/\|^/a0/\|^/master.m3u8$' q2def.req || true)" = 0
+        test "$(segs high q2def)" = all
+        test "$(segs a0 q2def)" = all
+        echo "::notice::hls_quality_mode: 2 requests only high/ ($(segs high q2) of its segments, $(streams q2) streams), 1 only low/; hls_audio_default_only leaves out a1/; both: $(grep -c . q2def.req) paths requested, $(grep -c . all.req) without the options"
+        # duration and seeking come from the selected variant
+        dur=$($FP -v error -hls_quality_mode 2 -show_entries format=duration -of csv=p=0 $H/master.m3u8)
+        echo "duration with hls_quality_mode 2: $dur"
+        awk -v d="$dur" 'BEGIN { exit !(d > 7.5 && d < 8.5) }'
+        rd q2seek -hls_quality_mode 2 -ss 4.2 -i $H/master.m3u8 -map 0:v -t 2
+        test "$(grep -vc '^#' q2seek.txt)" -gt 20
+        test "$(cnt '^/low/\|^/mid/' q2seek.req)" = 0
+        # the options exist: ffprobe takes them, and refuses one that does not
+        $FP -v error -hls_quality_mode 2 -hls_audio_default_only 1 -show_entries stream=codec_type -of csv=p=0 $H/master.m3u8 | sort | tee fp.txt
+        test "$(grep -c . fp.txt)" = 2
+        if $FP -v error -hls_no_such_option 1 $H/master.m3u8 > bogus.txt 2>&1; then
+          echo "ffprobe accepted an option that does not exist"; exit 1
+        fi
+        cat bogus.txt
+        grep -q hls_no_such_option bogus.txt
+        $OC $H/master.m3u8 hls_quality_mode=2 hls_audio_default_only=1
+        # exteplayer3 sets its three options on every input: the one of the
+        # other demuxer stays unused, without an error
+        rc=0; $OC $H/master.m3u8 hls_quality_mode=2 hls_audio_default_only=1 dash_subtitle_default_discard=1 > oc_hls.txt || rc=$?
+        cat oc_hls.txt
+        test $rc = 1
+        test "$(grep -c '^unused' oc_hls.txt)" = 1
+        grep -qx 'unused dash_subtitle_default_discard' oc_hls.txt
+        # the tree without the series: the same packets without the options
+        # (the stream id side data is the one difference, OE-A 0002), and it
+        # does not know the options
+        if [ -n "$VAN" ]; then
+          for t in all seek; do
+            a=""; b=""
+            if [ $t = seek ]; then a="-ss 3.3"; b="-t 3"; fi
+            $FF  -nostdin -v error -flags +bitexact $a -i $H/master.m3u8 -map 0 $b -c copy -fflags +bitexact -f framecrc - > pat_$t.txt
+            $VAN -nostdin -v error -flags +bitexact $a -i $H/master.m3u8 -map 0 $b -c copy -fflags +bitexact -f framecrc - > van_$t.txt
+            sed 's/, S=1, MPEGTS Stream ID, .*$//' van_$t.txt > van_$t.nosd
+            test "$(grep -vc '^#' pat_$t.txt)" -gt 100
+            diff -u van_$t.nosd pat_$t.txt
+            echo "::notice::HLS with three variants and two renditions, no option ($t): the $(grep -vc '^#' pat_$t.txt) packets and timestamps of the tree without the series"
+          done
+          if $VAN -nostdin -v error -hls_quality_mode 2 -i $H/master.m3u8 -map 0 -c copy -f null - > van_opt.txt 2>&1; then
+            echo "::warning::the tree without the series accepted hls_quality_mode"
+          else
+            echo "::notice::the tree without the series does not know hls_quality_mode: $(head -1 van_opt.txt)"
+          fi
+        else
+          echo "::warning::no ffmpeg of the tree without the series, comparison skipped"
+        fi
+        cd ..
+
+        # ---- DASH: video, audio and a subtitle representation in segments
+        mkdir pd && cd pd
+        gen -f lavfi -i testsrc=d=6:s=160x90:r=25 -f lavfi -i sine=d=6 -c:v libx264 -g 25 -c:a aac \
+            -f dash -seg_duration 2 dash.mpd
+        for n in 1 2 3; do
+          printf 'WEBVTT\n\n00:00:0%d.500 --> 00:00:0%d.500\ncue %d\n' $((2 * n - 2)) $((2 * n - 1)) $n > sub-$n.vtt
+        done
+        cat sub-2.vtt
+        sed 's#</Period>#<AdaptationSet id="9" contentType="text" mimeType="text/vtt" lang="en"><Representation id="sub" bandwidth="1000"><SegmentTemplate timescale="1" duration="2" startNumber="1" media="sub-$Number$.vtt"/></Representation></AdaptationSet></Period>#' dash.mpd > sub.mpd
+        test "$(grep -c 'sub-\$Number\$' sub.mpd)" = 1
+        cat sub.mpd
+        python3 $T/range_server.py 8093 1.1 $PWD/req.log &
+        SRV2=$!
+        trap 'kill $SRV1 $SRV2 2>/dev/null || true' EXIT
+        sleep 1
+        D=http://127.0.0.1:8093
+        # ds <name> <option> <enable>
+        ds() {
+          n=$1; shift
+          : > req.log
+          $DS $D/sub.mpd "$@" | tee ds_$n.txt
+          sort -u req.log > ds_$n.req
+          grep 'sub-' ds_$n.req || true
+        }
+        val() { sed -n "s/^$2 .*$3=\([-0-9]*\).*/\1/p" ds_$1.txt; }
+        ds plain 0 0
+        ds off   1 0
+        ds on    1 1
+        # without the option the subtitle stream is read from the start
+        grep -q '^streams=3 subtitle=2 discard=0$' ds_plain.txt
+        test "$(val plain phase1 sub)" -ge 1
+        test "$(cnt 'sub-2.vtt' ds_plain.req)" = 1
+        # with it: discarded from the start, nothing read beyond the header
+        grep -q '^streams=3 subtitle=2 discard=48$' ds_off.txt
+        test "$(val off phase1 sub)" = 0
+        test "$(val off phase2 sub)" = 0
+        test "$(val off phase1 av)" = 100
+        test "$(val off phase2 av)" -gt 100
+        test "$(cnt 'sub-[23].vtt' ds_off.req)" = 0
+        # and read once the player enables the stream
+        test "$(val on phase1 sub)" = 0
+        test "$(val on phase2 sub)" -ge 1
+        test "$(cnt 'sub-[23].vtt' ds_on.req)" -ge 1
+        # the audio and video packets are the same in all three
+        test "$(( $(val plain phase1 av) + $(val plain phase2 av) ))" = "$(( $(val off phase1 av) + $(val off phase2 av) ))"
+        test "$(( $(val on phase1 av) + $(val on phase2 av) ))" = "$(( $(val off phase1 av) + $(val off phase2 av) ))"
+        echo "::notice::dash_subtitle_default_discard: $(val off phase2 sub) subtitle packets and $(cnt 'sub-' ds_off.req) subtitle segment requested while discarded, $(val on phase2 sub) packets after the stream is enabled; without the option $(( $(val plain phase1 sub) + $(val plain phase2 sub) )) packets"
+        # the DASH options exteplayer3 can set
+        $OC $D/sub.mpd dash_subtitle_default_discard=1 fake_last_subtitle=1 video_rep_index=0 audio_rep_index=0 \
+            cenc_decryption_key=00112233445566778899aabbccddeeff \
+            cenc_decryption_video_key=00112233445566778899aabbccddeeff \
+            cenc_decryption_audio_key=00112233445566778899aabbccddeeff
+        cd ..
+
+        # ---- AAC dejitter of the MPEG-TS muxer
+        mkdir pj && cd pj
+        gen -f lavfi -i sine=f=440:d=10:r=48000 -c:a aac -b:a 96k in.mkv
+        # mux <ffmpeg> <output> [muxer options]
+        mux() { b=$1; o=$2; shift 2; $b -nostdin -v error -i in.mkv -c copy -flags +bitexact -fflags +bitexact "$@" -f mpegts -y $o; }
+        deltas() {
+          $FP -v error -select_streams a -show_entries packet=pts -of csv=p=0 $1 |
+            awk 'NR > 1 { print $1 - p } { p = $1 }' | sort -n | uniq -c
+        }
+        # one PES packet per frame, so that every packet has the timestamp written
+        mux "$FF" jit.ts   -pes_payload_size 0
+        mux "$FF" dej.ts   -pes_payload_size 0 -aac_pts_dejitter 60
+        mux "$FF" pat.ts
+        mux "$FF" pat0.ts  -aac_pts_dejitter 0
+        mux "$FF" pat60.ts -aac_pts_dejitter 60
+        deltas jit.ts | tee d_jit.txt
+        deltas dej.ts | tee d_dej.txt
+        deltas pat60.ts | tee d_pat60.txt
+        test "$(grep -c . d_jit.txt)" -gt 1
+        test "$(grep -c . d_dej.txt)" = 1
+        grep -q ' 1920$' d_dej.txt
+        test "$(grep -c . d_pat60.txt)" = 1
+        grep -q ' 1920$' d_pat60.txt
+        cmp pat.ts pat0.ts
+        if cmp -s pat.ts pat60.ts; then echo "aac_pts_dejitter=60 changed nothing"; exit 1; fi
+        echo "::notice::aac_pts_dejitter=60: $(awk '{ n += $1 } END { print n }' d_dej.txt) packet distances, all 1920 ticks; without the option $(grep -c . d_jit.txt) different distances ($(awk '{ printf "%s%s", s, $2; s = "/" }' d_jit.txt))"
+        if [ -n "$VAN" ]; then
+          mux "$VAN" van.ts
+          mux "$VAN" van_jit.ts -pes_payload_size 0
+          cmp van.ts pat.ts
+          cmp van_jit.ts jit.ts
+          echo "::notice::MPEG-TS muxer without aac_pts_dejitter: the output is byte for byte that of the tree without the series ($(stat -c %s pat.ts) bytes)"
+        fi
+
     # Patch 0053 must not change what the ffmpeg tool does with the stream
     # specifier forms that existed before: the build tree gets ffmpeg
     # without 0053 (fftools only, the libraries are not touched), both run
@@ -495,13 +838,66 @@ jobs:
     # Before that, patch 0054 alone: without it the tree reads the DASH
     # manifests over HTTP (one file per representation, byte range
     # segments) exactly as the installed libraries with it.
-    - name: HLS and DASH unchanged by the patches 0050 to 0052 and 0054 without a track switch
+    # The build tree of this step is the series at FF_OLD, the state before
+    # the commits ported from release/6.1-patched in November, built here
+    # as a second tree (ffold). So "the installed libraries" are the whole
+    # series and "the tree" is the earlier state, first as it was and then
+    # without the patches named above: every comparison below also says
+    # that the newer commits changed nothing for these streams. First of
+    # all the earlier state as it was against the whole series: the HLS
+    # stream with three variants, the DASH stream with subtitles, the
+    # MPEG-TS muxer and the track switches.
+    - name: HLS and DASH unchanged by the newer commits and by the patches 0050 to 0052 and 0054 without a track switch
       run: |
         set -eux
-        cd ffsrc
+        git -C ffsrc worktree add --detach ../ffold $FF_OLD
+        cd ffold
+        test "$(git rev-parse --short=10 HEAD)" = $FF_OLD
+        test "$(grep -c 'hls_quality_mode\|associated_streams' libavformat/hls.c || true)" = 0
+        ./configure --prefix=$HOME/ffold --enable-shared --disable-static --disable-doc \
+          --enable-gpl --enable-version3 --enable-libxml2 --enable-openssl --enable-libx264 --enable-zlib \
+          --extra-cflags="-Werror=implicit-function-declaration -Werror=incompatible-pointer-types -Werror=int-conversion" > /dev/null
+        make -j$(nproc) > /dev/null 2> ../ffold_make.err || { tail -40 ../ffold_make.err; exit 1; }
         FFS=$PWD
         REF=$PWD/libavutil:$PWD/libavcodec:$PWD/libavformat:$PWD/libavdevice:$PWD/libavfilter:$PWD/libswscale:$PWD/libswresample
         NEW=$HOME/ffmpeg/lib
+        oldlib=$(LD_LIBRARY_PATH=$REF ldd ./ffmpeg | awk '/libavformat/ {print $3}')
+        newlib=$(LD_LIBRARY_PATH=$NEW ldd ./ffmpeg | awk '/libavformat/ {print $3}')
+        echo "earlier state: $oldlib  whole series: $newlib"
+        test "$(grep -c 'hls_quality_mode' "$oldlib" || true)" = 0
+        test "$(grep -c 'hls_quality_mode' "$newlib")" -gt 0
+        # cmpold <name> <least number of packets> <input options, -map>
+        cmpold() {
+          n=$1; min=$2; shift 2
+          for lib in REF NEW; do
+            LD_LIBRARY_PATH=${!lib} tmo ./ffmpeg -nostdin -v error -flags +bitexact "$@" -c copy -fflags +bitexact -f framecrc - > ../old_${n}_$lib.txt
+          done
+          test "$(grep -vc '^#' ../old_${n}_NEW.txt)" -gt $min
+          diff -u ../old_${n}_REF.txt ../old_${n}_NEW.txt
+          echo "::notice::series before and after the newer commits, $n: the same $(grep -vc '^#' ../old_${n}_NEW.txt) packets"
+        }
+        cmpold hls3_all  400 -i ../po/master.m3u8 -map 0
+        cmpold hls3_seek 100 -ss 3.3 -i ../po/master.m3u8 -map 0 -t 3
+        cmpold hls3_one   50 -i ../po/master.m3u8 -map 0:a:1
+        cmpold dash_all  300 -i ../pd/dash.mpd -map 0
+        cmpold dash_seek  50 -ss 3.3 -i ../pd/dash.mpd -map 0 -t 2
+        cmpold dashsub_all 300 -allowed_extensions ALL -i ../pd/sub.mpd -map 0
+        for lib in REF NEW; do
+          LD_LIBRARY_PATH=${!lib} tmo ./ffmpeg -nostdin -v error -i ../pj/in.mkv -c copy -flags +bitexact -fflags +bitexact -f mpegts -y ../old_mux_$lib.ts
+        done
+        cmp ../old_mux_REF.ts ../old_mux_NEW.ts
+        cmp ../old_mux_NEW.ts ../pj/pat.ts
+        echo "::notice::series before and after the newer commits, MPEG-TS muxer: the same $(stat -c %s ../old_mux_NEW.ts) bytes"
+        # the track switches of the earlier state give the same first packets
+        for n in hls tl dur sf; do
+          f=a.mpd; if [ $n = hls ]; then f=master.m3u8; fi
+          for lib in REF NEW; do
+            (cd ../sw/$n && LD_LIBRARY_PATH=${!lib} tmo ../../track_switch $f 6 near 0.5) > ../old_switch_${n}_$lib.txt
+          done
+          cat ../old_switch_${n}_NEW.txt
+          diff -u ../old_switch_${n}_REF.txt ../old_switch_${n}_NEW.txt
+        done
+        echo "::notice::series before and after the newer commits: the track switch check prints the same for HLS and three kinds of DASH"
         (cd ../sw && exec python3 ../.github/ffmpeg9-tests/range_server.py 8089) 2>/dev/null &
         SRV=$!
         trap 'kill $SRV 2>/dev/null || true' EXIT
@@ -737,6 +1133,17 @@ jobs:
           echo "::warning::no ffmpeg of the tree without the series, comparison skipped"
         fi
         exit 0
+
+    # The steps that note their failures instead of ending the job, so
+    # that one run shows the result of every check.
+    - name: Results of the FATE and HTTP tests of the ported commits
+      if: ${{ !cancelled() }}
+      run: |
+        if [ -s deferred_failures.txt ]; then
+          sed 's/^/::error::/' deferred_failures.txt
+          exit 1
+        fi
+        echo "::notice::the FATE tests and the HTTP tests of the commits ported from release/6.1-patched passed"
 
   # skyjet18/exteplayer3 master built the way its tests/build.sh does it:
   # against a static, out-of-tree build of the series. Its unit tests
